@@ -53,7 +53,6 @@ class OptiOcppHandler(cp):
     async def on_start_transaction(self, connector_id, id_tag, meter_start, timestamp, **kwargs):
         tid = 1234
         self.active_transaction_id = tid
-        _LOGGER.info(f"Transaction {tid} started.")
         if self._on_transaction_start: await self._on_transaction_start(self.id, tid)
         return call_result.StartTransactionPayload(transaction_id=tid, id_tag_info={'status': AuthorizationStatus.accepted})
 
@@ -84,19 +83,24 @@ class OptiOcppHandler(cp):
         return call_result.MeterValuesPayload()
 
     async def initialise(self, limit):
-        opts = {'TxBeforeAcceptedEnabled': 'true', 'AuthorizeRemoteTxRequests': 'false', 'StopTransactionOnInvalidId': 'false', 'UnlockConnectorOnEVSideDisconnect': 'false'}
+        opts = {
+            'TxBeforeAcceptedEnabled': 'true',
+            'AuthorizeRemoteTxRequests': 'false',
+            'StopTransactionOnInvalidId': 'false',
+            'UnlockConnectorOnEVSideDisconnect': 'false',
+            'MeterValueSampleInterval': '30', # Ensure data flows every 30s
+            'MeterValuesSampledData': 'Energy.Active.Import.Register,Power.Active.Import,Voltage,Current.Import'
+        }
         for k, v in opts.items():
             try: await self.call(call.ChangeConfigurationPayload(key=k, value=v))
             except Exception: pass
         await self.set_profile("TxDefaultProfile", limit, 1, 1)
 
-        # PROACTIVE SYNC: Ask charger for current status and meter values immediately
+        # PROACTIVE SYNC
         try:
-            _LOGGER.info(f"Proactively syncing status/meter for {self.id}")
             await self.call(call.TriggerMessagePayload(requested_message='StatusNotification', connector_id=1))
             await self.call(call.TriggerMessagePayload(requested_message='MeterValues', connector_id=1))
-        except Exception as e:
-            _LOGGER.debug(f"Proactive sync not supported or failed: {e}")
+        except Exception: pass
 
     async def set_profile(self, purpose, amps, conn=1, stack=1):
         id_map = {'ChargePointMaxProfile': 100, 'TxDefaultProfile': 200, 'TxProfile': 300}

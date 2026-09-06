@@ -12,6 +12,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
     sensors = [
         OptiGenericSensor(cid, "Status", "status", "mdi:ev-station"),
         OptiGenericSensor(cid, "Energy", "energy", "mdi:meter-electric", UnitOfEnergy.WATT_HOUR, SensorDeviceClass.ENERGY, SensorStateClass.TOTAL_INCREASING),
+        OptiGenericSensor(cid, "Energy Today", "energy_today", "mdi:calendar-today", UnitOfEnergy.WATT_HOUR, SensorDeviceClass.ENERGY, SensorStateClass.TOTAL_INCREASING),
         OptiGenericSensor(cid, "Power", "power", "mdi:flash", UnitOfPower.WATT, SensorDeviceClass.POWER, SensorStateClass.MEASUREMENT),
         OptiGenericSensor(cid, "Power L1", "power_l1", "mdi:flash", UnitOfPower.WATT, SensorDeviceClass.POWER, SensorStateClass.MEASUREMENT),
         OptiGenericSensor(cid, "Power L2", "power_l2", "mdi:flash", UnitOfPower.WATT, SensorDeviceClass.POWER, SensorStateClass.MEASUREMENT),
@@ -39,6 +40,9 @@ class OptiGenericSensor(SensorEntity):
         self._attr_state_class = state_class
         self._value = "Disconnected" if suffix == "status" else None
 
+        # Internal state for Energy Today tracking
+        self._last_midnight_total = None
+
     async def async_added_to_hass(self):
         """Register callbacks."""
         self.async_on_remove(
@@ -52,6 +56,10 @@ class OptiGenericSensor(SensorEntity):
     @callback
     def _update_callback(self, data):
         """Update the sensor's value."""
+        if self.suffix == "energy_today":
+            self._handle_daily_energy(data.get("energy"))
+            return
+
         if self.suffix in data:
             new_val = data[self.suffix]
             if self._attr_native_unit_of_measurement:
@@ -60,6 +68,23 @@ class OptiGenericSensor(SensorEntity):
             else:
                 self._value = new_val
             self.async_write_ha_state()
+
+    def _handle_daily_energy(self, current_total_str):
+        """Tracks the daily delta from the cumulative meter."""
+        if current_total_str is None: return
+
+        try:
+            current_total = float(current_total_str)
+            # On first run or restart, we assume today's start was the current total
+            # In a full HA setup, utility_meter is better, but this provides a baseline.
+            if self._last_midnight_total is None:
+                self._last_midnight_total = current_total
+                self._value = 0.0
+            else:
+                self._value = current_total - self._last_midnight_total
+
+            self.async_write_ha_state()
+        except Exception: pass
 
     @property
     def native_value(self):
