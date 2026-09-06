@@ -46,40 +46,48 @@ class OptiOcppHandler(cp):
     @on(Action.StatusNotification)
     async def on_status_notification(self, connector_id, error_code, status, **kwargs):
         self.status = status
-        if self._on_status_change: await self._on_status_change(self.id, status)
+        if self._on_status_change:
+            await self._on_status_change(self.id, status)
         return call_result.StatusNotificationPayload()
 
     @on(Action.StartTransaction)
     async def on_start_transaction(self, connector_id, id_tag, meter_start, timestamp, **kwargs):
         tid = 1234
         self.active_transaction_id = tid
-        if self._on_transaction_start: await self._on_transaction_start(self.id, tid)
+        if self._on_transaction_start:
+            await self._on_transaction_start(self.id, tid)
         return call_result.StartTransactionPayload(transaction_id=tid, id_tag_info={'status': AuthorizationStatus.accepted})
 
     @on(Action.StopTransaction)
     async def on_stop_transaction(self, meter_stop, timestamp, transaction_id, **kwargs):
         self.active_transaction_id = None
-        if self._on_transaction_start: await self._on_transaction_start(self.id, None)
+        if self._on_transaction_start:
+            await self._on_transaction_start(self.id, None)
         return call_result.StopTransactionPayload()
 
     @on(Action.MeterValues)
     async def on_meter_values(self, connector_id, meter_value, transaction_id=None, **kwargs):
-        if transaction_id and self.active_transaction_id != transaction_id:
-            self.active_transaction_id = transaction_id
-            if self._on_transaction_start: await self._on_transaction_start(self.id, transaction_id)
+        try:
+            if transaction_id and self.active_transaction_id != transaction_id:
+                self.active_transaction_id = transaction_id
+                if self._on_transaction_start: await self._on_transaction_start(self.id, transaction_id)
 
-        if self._on_meter_values:
-            data = {}
-            for mv in meter_value:
-                sv_list = getattr(mv, 'sampled_value', []) if not isinstance(mv, dict) else mv.get('sampledValue', [])
-                for sv in sv_list:
-                    measurand = getattr(sv, 'measurand', 'Energy.Active.Import.Register') if not isinstance(sv, dict) else sv.get('measurand')
-                    phase = getattr(sv, 'phase', None) if not isinstance(sv, dict) else sv.get('phase')
-                    val = getattr(sv, 'value', None) if not isinstance(sv, dict) else sv.get('value')
-                    if val is not None:
-                        key = f"{measurand}_{phase}" if phase else measurand
-                        data[key] = val
-            if data: await self._on_meter_values(self.id, data)
+            if self._on_meter_values:
+                data = {}
+                for mv in meter_value:
+                    # Robust access for both v0.23.0 Dataclass and dict
+                    sv_list = getattr(mv, 'sampled_value', []) if not isinstance(mv, dict) else mv.get('sampledValue', [])
+                    for sv in sv_list:
+                        meas = getattr(sv, 'measurand', 'Energy.Active.Import.Register') if not isinstance(sv, dict) else sv.get('measurand')
+                        phase = getattr(sv, 'phase', None) if not isinstance(sv, dict) else sv.get('phase')
+                        val = getattr(sv, 'value', None) if not isinstance(sv, dict) else sv.get('value')
+                        if val is not None:
+                            key = f"{meas}_{phase}" if phase else meas
+                            data[key] = val
+                if data: await self._on_meter_values(self.id, data)
+        except Exception as e:
+            _LOGGER.error(f"Error parsing MeterValues: {e}")
+
         return call_result.MeterValuesPayload()
 
     async def initialise(self, limit):
@@ -93,11 +101,7 @@ class OptiOcppHandler(cp):
             await self.call(call.TriggerMessagePayload(requested_message='MeterValues', connector_id=1))
         except Exception: pass
 
-    async def clear_profiles(self):
-        return await self.call(call.ClearChargingProfilePayload())
-
     async def set_profile(self, purpose, amps, conn=1, stack=20):
-        """Standard profile builder with Stack Level 20 Priority"""
         id_map = {'ChargePointMaxProfile': 100, 'TxDefaultProfile': 200, 'TxProfile': 300}
         prof = {
             'chargingProfileId': id_map.get(purpose, 999),

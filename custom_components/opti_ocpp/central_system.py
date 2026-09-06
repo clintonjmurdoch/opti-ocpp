@@ -52,7 +52,6 @@ class OptiCentralSystem:
         )
         self.instances[path] = handler
 
-        # Start listener and initialise in background
         loop_task = asyncio.create_task(handler.start())
         self.hass.add_job(self._safe_initialise(handler))
 
@@ -64,17 +63,19 @@ class OptiCentralSystem:
     async def _safe_initialise(self, handler):
         await handler.initialise(self.entry.data["default_limit"])
 
-    def _update_status(self, cid, status):
+    async def _update_status(self, cid, status):
+        """Async callback for status changes."""
         self._safe_dispatch(cid, {"status": status})
         if status == "Charging":
-            self.hass.add_job(self._apply_limit(cid))
+            self.hass.async_create_task(self._apply_limit(cid))
 
-    def _handle_tid_update(self, cid, tid):
+    async def _handle_tid_update(self, cid, tid):
+        """Async callback for transaction ID persistence."""
         self._cached_tid = tid
-        self.hass.add_job(self._store.async_save({"active_transaction_id": tid}))
+        await self._store.async_save({"active_transaction_id": tid})
 
-    def _handle_meter_values(self, cid, data):
-        """Bridges raw measurands to HA sensors (Thread-Safe)"""
+    async def _handle_meter_values(self, cid, data):
+        """Async callback for meter data processing."""
         mapping = {
             "Energy.Active.Import.Register": "energy",
             "Power.Active.Import": "power",
@@ -96,14 +97,15 @@ class OptiCentralSystem:
             self._safe_dispatch(cid, update_payload)
 
     def _safe_dispatch(self, cid, payload):
-        """Official HA pattern to bridge external threads to the event loop."""
-        self.hass.add_job(
+        """Ensures dispatcher call is thread-safe on the main HA loop."""
+        self.hass.loop.call_soon_threadsafe(
             async_dispatcher_send, self.hass, OPTI_DATA_UPDATE.format(cid), payload
         )
 
     async def _apply_limit(self, cid):
         state = self.hass.states.get(f"number.opti_{cid}_limit")
         if state and cid in self.instances:
-            await self.instances[cid].set_profile("TxProfile", float(state.state), conn=1, stack=20)
+            limit = float(state.state)
+            await self.instances[cid].set_profile("TxProfile", limit, conn=1, stack=20)
 
     def get_instance(self, cid): return self.instances.get(cid)
