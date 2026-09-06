@@ -26,7 +26,7 @@ class OptiOcppHandler(cp):
             self.phase_count = 1
         else:
             self.phase_count = 3
-        return call_result.BootNotification(
+        return call_result.BootNotificationPayload(
             current_time=datetime.now(timezone.utc).isoformat(),
             interval=30,
             status=RegistrationStatus.accepted
@@ -34,15 +34,14 @@ class OptiOcppHandler(cp):
 
     @on(Action.Heartbeat)
     async def on_heartbeat(self, **kwargs):
-        return call_result.Heartbeat(current_time=datetime.now(timezone.utc).isoformat())
+        return call_result.HeartbeatPayload(current_time=datetime.now(timezone.utc).isoformat())
 
     @on(Action.Authorize)
     async def on_authorize(self, id_tag, **kwargs):
-        return call_result.Authorize(id_tag_info={'status': AuthorizationStatus.accepted})
+        return call_result.AuthorizePayload(id_tag_info={'status': AuthorizationStatus.accepted})
 
     @on(Action.StatusNotification)
     async def on_status_notification(self, connector_id, error_code, status, **kwargs):
-        """Explicitly capture status from the correct positional/keyword argument"""
         self.status = status
         if self._on_status_change:
             await self._on_status_change(self.id, status)
@@ -51,7 +50,7 @@ class OptiOcppHandler(cp):
             self._start_timer()
         else:
             self._stop_timer()
-        return call_result.StatusNotification()
+        return call_result.StatusNotificationPayload()
 
     @on(Action.StartTransaction)
     async def on_start_transaction(self, connector_id, id_tag, meter_start, timestamp, **kwargs):
@@ -59,7 +58,7 @@ class OptiOcppHandler(cp):
         self.active_transaction_id = tid
         if self._on_transaction_start:
             await self._on_transaction_start(self.id, tid)
-        return call_result.StartTransaction(transaction_id=tid, id_tag_info={'status': AuthorizationStatus.accepted})
+        return call_result.StartTransactionPayload(transaction_id=tid, id_tag_info={'status': AuthorizationStatus.accepted})
 
     @on(Action.StopTransaction)
     async def on_stop_transaction(self, meter_stop, timestamp, transaction_id, **kwargs):
@@ -67,7 +66,7 @@ class OptiOcppHandler(cp):
         if self._on_transaction_start:
             await self._on_transaction_start(self.id, None)
         self._stop_timer()
-        return call_result.StopTransaction()
+        return call_result.StopTransactionPayload()
 
     @on(Action.MeterValues)
     async def on_meter_values(self, connector_id, meter_value, transaction_id=None, **kwargs):
@@ -79,7 +78,6 @@ class OptiOcppHandler(cp):
         if self._on_meter_values:
             data = {}
             for mv in meter_value:
-                # Support for both dict and dataclass access
                 sv_list = getattr(mv, 'sampled_value', []) if not isinstance(mv, dict) else mv.get('sampledValue', [])
                 for sv in sv_list:
                     measurand = getattr(sv, 'measurand', 'Energy.Active.Import.Register') if not isinstance(sv, dict) else sv.get('measurand')
@@ -92,7 +90,7 @@ class OptiOcppHandler(cp):
                         data[key] = val
             if data:
                 await self._on_meter_values(self.id, data)
-        return call_result.MeterValues()
+        return call_result.MeterValuesPayload()
 
     # --- Actions ---
 
@@ -104,8 +102,10 @@ class OptiOcppHandler(cp):
             'UnlockConnectorOnEVSideDisconnect': 'false'
         }
         for k, v in opts.items():
-            try: await self.call(call.ChangeConfiguration(key=k, value=v))
-            except Exception: pass
+            try:
+                await self.call(call.ChangeConfigurationPayload(key=k, value=v))
+            except Exception:
+                pass
         await self.set_profile("TxDefaultProfile", limit, 1, 1)
 
     async def set_profile(self, purpose, amps, conn=1, stack=1):
@@ -123,13 +123,13 @@ class OptiOcppHandler(cp):
         }
         if purpose == "TxProfile" and self.active_transaction_id:
             prof['transactionId'] = self.active_transaction_id
-        return await self.call(call.SetChargingProfile(connector_id=conn, cs_charging_profiles=prof))
+        return await self.call(call.SetChargingProfilePayload(connector_id=conn, cs_charging_profiles=prof))
 
     async def start_charge(self):
-        return await self.call(call.RemoteStartTransaction(id_tag='PLUG_PLAY_IDTAG', connector_id=1))
+        return await self.call(call.RemoteStartTransactionPayload(id_tag='PLUG_PLAY_IDTAG', connector_id=1))
 
     async def stop_charge(self):
-        return await self.call(call.RemoteStopTransaction(transaction_id=self.active_transaction_id or 1234))
+        return await self.call(call.RemoteStopTransactionPayload(transaction_id=self.active_transaction_id or 1234))
 
     def _start_timer(self):
         self._stop_timer()

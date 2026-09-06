@@ -4,6 +4,7 @@ from homeassistant.config_entries import ConfigEntry
 from .const import DOMAIN
 from .central_system import OptiCentralSystem
 from ocpp.v16 import call
+from ocpp.v16.enums import ResetType
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -23,23 +24,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
             _LOGGER.warning(f"Service {service_call.service} called but charger {cid} is not connected.")
             return
 
-        # Mapping service name to handler method
         op = service_call.service
 
         if op == "initialise": await instance.initialise(entry.data["default_limit"])
         elif op == "charge": await instance.start_charge()
         elif op == "stop": await instance.stop_charge()
-        elif op == "reset": await instance.call(call.Reset(type="Soft"))
+        elif op == "reset": await instance.call(call.ResetPayload(type=ResetType.soft))
         elif op == "limit": await instance.set_profile("TxProfile", service_call.data.get("limit", 6), 1, 2)
         elif op == "get_configuration":
-            res = await instance.call(call.GetConfiguration())
+            res = await instance.call(call.GetConfigurationPayload())
             _LOGGER.info(f"Opti Config: {res}")
         elif op == "set_configuration":
-            await instance.call(call.ChangeConfiguration(key=service_call.data["key"], value=service_call.data["value"]))
+            await instance.call(call.ChangeConfigurationPayload(key=service_call.data["key"], value=service_call.data["value"]))
 
     services = ["initialise", "charge", "stop", "reset", "limit", "get_configuration", "set_configuration"]
     for service_name in services:
-        # Registering without cid prefix to match services.yaml
         hass.services.async_register(DOMAIN, service_name, handle_service)
 
     await hass.config_entries.async_forward_entry_setups(entry, ["sensor", "number"])
