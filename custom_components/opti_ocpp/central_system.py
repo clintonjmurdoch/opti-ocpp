@@ -23,17 +23,36 @@ class OptiCentralSystem:
         data = await self._store.async_load()
         if data:
             self._cached_tid = data.get("active_transaction_id")
+            _LOGGER.info(f"Loaded persistent Transaction ID: {self._cached_tid}")
 
-        self._server = await websockets.serve(self._on_connect, "0.0.0.0", self.port, subprotocols=["ocpp1.6"])
+        _LOGGER.info(f"Starting SEVR Opti OCPP server on port {self.port}...")
+        try:
+            self._server = await websockets.serve(
+                self._on_connect,
+                "0.0.0.0",
+                self.port,
+                subprotocols=["ocpp1.6"]
+            )
+            _LOGGER.info(f"OCPP Server is now listening on 0.0.0.0:{self.port}")
+        except Exception as e:
+            _LOGGER.error(f"Failed to start OCPP server: {e}")
 
     async def stop(self):
         if self._server:
             self._server.close()
             await self._server.wait_closed()
+            _LOGGER.info("OCPP Server stopped.")
 
     async def _on_connect(self, websocket):
+        """Handle new incoming WebSocket connections."""
         path = websocket.request.path.strip('/')
-        if path != self.charger_id: return
+        _LOGGER.info(f"New connection attempt from {websocket.remote_address} at path: /{path}")
+
+        if path != self.charger_id:
+            _LOGGER.warning(f"Connection rejected: Path '/{path}' does not match configured ID '/{self.charger_id}'")
+            return
+
+        _LOGGER.info(f"Charger '{path}' verified. Starting OCPP handshake...")
 
         handler = OptiOcppHandler(
             id=path,
@@ -43,26 +62,34 @@ class OptiCentralSystem:
             on_meter_values=self._handle_meter_values,
             initial_tid=self._cached_tid
         )
+
         self.instances[path] = handler
+
+        # Initialise with optimal settings immediately
         await handler.initialise(self.entry.data["default_limit"])
-        try: await handler.start()
+
+        try:
+            await handler.start()
+        except Exception as e:
+            _LOGGER.error(f"Error in OCPP session for {path}: {e}")
         finally:
+            _LOGGER.info(f"Charger {path} disconnected.")
             self.instances.pop(path, None)
             async_dispatcher_send(self.hass, OPTI_DATA_UPDATE.format(path), {"status": "Disconnected"})
 
     async def _update_status(self, cid, status):
-        # Notify entities via dispatcher
+        _LOGGER.info(f"Charger {cid} reported status: {status}")
         async_dispatcher_send(self.hass, OPTI_DATA_UPDATE.format(cid), {"status": status})
-
         if status == "Charging":
             await self._apply_limit(cid)
 
     async def _handle_tid_update(self, cid, tid):
         self._cached_tid = tid
         await self._store.async_save({"active_transaction_id": tid})
+        _LOGGER.debug(f"Transaction ID updated for {cid}: {tid}")
 
     async def _handle_meter_values(self, cid, data):
-        """Maps incoming raw meter measurands to HA sensor suffixes"""
+        """Bridges raw measurements to dispatcher."""
         mapping = {
             "Energy.Active.Import.Register": "energy",
             "Power.Active.Import": "power",
@@ -87,6 +114,8 @@ class OptiCentralSystem:
     async def _apply_limit(self, cid):
         state = self.hass.states.get(f"number.opti_{cid}_limit")
         if state and cid in self.instances:
-            await self.instances[cid].set_profile("TxProfile", float(state.state), conn=1, stack=2)
+            limit = float(state.state)
+            _LOGGER.info(f"Pushing active limit: {limit}A")
+            await self.instances[cid].set_profile("TxProfile", limit, conn=1, stack=2)
 
     def get_instance(self, cid): return self.instances.get(cid)

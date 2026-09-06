@@ -36,7 +36,8 @@ class OptiGenericSensor(SensorEntity):
         self._attr_native_unit_of_measurement = unit
         self._attr_device_class = device_class
         self._attr_state_class = state_class
-        self._value = None
+        # Initialize status as Disconnected, others as None
+        self._value = "Disconnected" if suffix == "status" else None
 
     async def async_added_to_hass(self):
         """Register callbacks."""
@@ -52,26 +53,18 @@ class OptiGenericSensor(SensorEntity):
         """Update the sensor's value."""
         if self.suffix in data:
             new_val = data[self.suffix]
-            # Handle float conversion if needed for numeric sensors
             if self._attr_native_unit_of_measurement:
-                try:
-                    self._value = float(new_val)
-                except (ValueError, TypeError):
-                    self._value = None
+                try: self._value = float(new_val)
+                except (ValueError, TypeError): self._value = None
             else:
                 self._value = new_val
-
             self.async_write_ha_state()
 
     @property
     def native_value(self):
-        """Return the value of the sensor."""
         return self._value
 
     @property
     def available(self):
-        """Return True if entity is available."""
-        # Status sensor is always available (Disconnected by default)
-        if self.suffix == "status":
-            return True
+        if self.suffix == "status": return True
         return self._value is not None
