@@ -18,7 +18,7 @@ class OptiLimitSlider(NumberEntity):
         self.cid = entry.data["charger_id"]
         self._attr_name = f"Opti {self.cid} Limit"
         self._attr_unique_id = f"opti_{self.cid}_limit"
-        self._attr_native_min_value = 0 # Requested 0-32
+        self._attr_native_min_value = 0
         self._attr_native_max_value = 32
         self._attr_native_step = 1
         self._attr_native_value = entry.data["default_limit"]
@@ -50,7 +50,6 @@ class OptiLimitSlider(NumberEntity):
         server = self.hass.data[DOMAIN][self.entry_id]
         instance = server.get_instance(self.cid)
 
-        # We strictly use TxProfile for the slider as requested.
         if instance and instance.status == "Charging":
             await instance.set_profile("TxProfile", value, conn=1, stack=2)
 

@@ -45,6 +45,7 @@ class OptiCentralSystem:
             _LOGGER.info("OCPP Server stopped.")
 
     async def _on_connect(self, websocket):
+        """Handle new incoming WebSocket connections."""
         path = websocket.request.path.strip('/')
         _LOGGER.info(f"Connection attempt from {websocket.remote_address} at path: /{path}")
 
@@ -64,33 +65,34 @@ class OptiCentralSystem:
         )
         self.instances[path] = handler
 
-        # Run message listener
+        # Start the OCPP event loop
         loop_task = asyncio.create_task(handler.start())
+
         # Safe-trigger initialisation in background
-        self.hass.async_create_task(self._safe_initialise(handler))
+        self.hass.add_job(self._safe_initialise(handler))
 
         try: await loop_task
         except Exception: pass
         finally:
-            _LOGGER.info(f"Charger {path} disconnected.")
+            _LOGGER.info(f"Charger {path} session ended.")
             self.instances.pop(path, None)
             self._safe_dispatch(path, {"status": "Disconnected"})
 
     async def _safe_initialise(self, handler):
         try:
             await handler.initialise(self.entry.data["default_limit"])
-            _LOGGER.info(f"Initialisation sequence complete for {handler.id}.")
+            _LOGGER.info(f"Auto-initialisation sequence complete for {handler.id}.")
         except Exception as e:
             _LOGGER.error(f"Initialisation failed for {handler.id}: {e}")
 
     async def _update_status(self, cid, status):
         self._safe_dispatch(cid, {"status": status})
         if status == "Charging":
-            self.hass.async_create_task(self._apply_limit(cid))
+            self.hass.add_job(self._apply_limit(cid))
 
     async def _handle_tid_update(self, cid, tid):
         self._cached_tid = tid
-        self.hass.async_create_task(self._store.async_save({"active_transaction_id": tid}))
+        self.hass.add_job(self._store.async_save({"active_transaction_id": tid}))
 
     async def _handle_meter_values(self, cid, data):
         mapping = {
@@ -114,14 +116,18 @@ class OptiCentralSystem:
             self._safe_dispatch(cid, update_payload)
 
     def _safe_dispatch(self, cid, payload):
-        """Standard thread-safe bridge to dispatcher"""
-        self.hass.add_job(
+        """
+        Thread-safe bridge to dispatcher.
+        Uses call_soon_threadsafe to guarantee execution on HA's main event loop.
+        """
+        self.hass.loop.call_soon_threadsafe(
             async_dispatcher_send, self.hass, OPTI_DATA_UPDATE.format(cid), payload
         )
 
     async def _apply_limit(self, cid):
         state = self.hass.states.get(f"number.opti_{cid}_limit")
         if state and cid in self.instances:
-            await self.instances[cid].set_profile("TxProfile", float(state.state), conn=1, stack=2)
+            limit = float(state.state)
+            await self.instances[cid].set_profile("TxProfile", limit, conn=1, stack=2)
 
     def get_instance(self, cid): return self.instances.get(cid)

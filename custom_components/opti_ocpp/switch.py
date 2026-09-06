@@ -1,4 +1,5 @@
 import logging
+from homeassistant.core import callback
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from .const import DOMAIN, OPTI_DATA_UPDATE
@@ -32,11 +33,11 @@ class OptiChargeSwitch(SwitchEntity):
             )
         )
 
+    @callback
     def _update_callback(self, data):
         """Update switch state based on charger status."""
         self._available = True
         if "status" in data:
-            # We consider the switch "ON" if it is actually charging
             self._is_on = (data["status"] == "Charging")
         self.async_write_ha_state()
 
