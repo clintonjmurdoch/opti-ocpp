@@ -51,16 +51,12 @@ class OptiCentralSystem:
         )
         self.instances[path] = handler
 
-        # 1. Start the OCPP listener task
         loop_task = asyncio.create_task(handler.start())
-
-        # 2. Safely schedule the initialise task on the HA main loop
         self.hass.loop.call_soon_threadsafe(
             lambda: self.hass.async_create_task(handler.initialise(self.entry.data["default_limit"]))
         )
 
-        try:
-            await loop_task
+        try: await loop_task
         finally:
             self.instances.pop(path, None)
             self._safe_dispatch(path, {"status": "Disconnected"})
@@ -68,7 +64,6 @@ class OptiCentralSystem:
     # --- Sync Callbacks (Bridges from OCPP thread to HA Loop) ---
 
     def _handle_status_update(self, cid, status):
-        """Thread-safe status update."""
         self.hass.loop.call_soon_threadsafe(
             lambda: self.hass.async_create_task(self._async_update_status(cid, status))
         )
@@ -79,13 +74,18 @@ class OptiCentralSystem:
             await self._apply_limit(cid)
 
     def _handle_tid_update(self, cid, tid):
-        """Thread-safe TID update."""
         self.hass.loop.call_soon_threadsafe(
             lambda: self.hass.async_create_task(self._store.async_save({"active_transaction_id": tid}))
         )
 
     def _handle_meter_values(self, cid, data):
-        """Thread-safe meter data mapping."""
+        """Thread-safe meter data bridge. Fixed lambda target."""
+        self.hass.loop.call_soon_threadsafe(
+            lambda: self.hass.async_create_task(self._async_update_meter_data(cid, data))
+        )
+
+    async def _async_update_meter_data(self, cid, data):
+        """Processes the mapped meter data on the HA main loop."""
         mapping = {
             "Energy.Active.Import.Register": "energy",
             "Power.Active.Import": "power",

@@ -9,7 +9,7 @@ from ocpp.v16.enums import Action, RegistrationStatus, AuthorizationStatus, Rese
 
 _LOGGER = logging.getLogger(__name__)
 
-# --- Library Case Normalization ---
+# --- Library Casing Fix ---
 if not hasattr(Action, 'meter_values'): Action.meter_values = Action.MeterValues
 if not hasattr(Action, 'status_notification'): Action.status_notification = Action.StatusNotification
 if not hasattr(Action, 'boot_notification'): Action.boot_notification = Action.BootNotification
@@ -31,7 +31,6 @@ class OptiOcppHandler(cp):
         self._on_meter_values = on_meter_values
 
     def _get_val(self, obj, attr, default=None):
-        """Robustly extract string values from dataclasses/enums/dicts."""
         res = getattr(obj, attr, default) if not isinstance(obj, dict) else obj.get(attr, default)
         return res.value if hasattr(res, 'value') else res
 
@@ -39,11 +38,7 @@ class OptiOcppHandler(cp):
     async def on_boot_notification(self, charge_point_vendor, charge_point_model, **kwargs):
         _LOGGER.info(f"Received Boot from {charge_point_vendor} ({charge_point_model})")
         if "7" in charge_point_model and "22" not in charge_point_model: self.phase_count = 1
-        return call_result.BootNotificationPayload(
-            current_time=datetime.now(timezone.utc).isoformat(),
-            interval=30,
-            status=RegistrationStatus.accepted
-        )
+        return call_result.BootNotificationPayload(current_time=datetime.now(timezone.utc).isoformat(), interval=30, status=RegistrationStatus.accepted)
 
     @on(Action.Heartbeat)
     async def on_heartbeat(self, **kwargs):
@@ -79,6 +74,7 @@ class OptiOcppHandler(cp):
     @on(Action.MeterValues)
     async def on_meter_values(self, connector_id, meter_value, transaction_id=None, **kwargs):
         try:
+            _LOGGER.info(f"METER HANDLER: Received values for Conn {connector_id}, TX {transaction_id}")
             if transaction_id and self.active_transaction_id != transaction_id:
                 self.active_transaction_id = transaction_id
                 if self._on_transaction_start: self._on_transaction_start(self.id, transaction_id)
@@ -119,7 +115,6 @@ class OptiOcppHandler(cp):
         except Exception: pass
 
     async def clear_profiles(self):
-        """Wipes all stored profiles from charger memory."""
         try:
             res = await self.call(call.ClearChargingProfilePayload())
             _LOGGER.info(f"Clear Profiles result: {res.status}")
@@ -143,4 +138,4 @@ class OptiOcppHandler(cp):
         return await self.call(call.RemoteStartTransactionPayload(id_tag='PLUG_PLAY_IDTAG', connector_id=1))
 
     async def stop_charge(self):
-        return await self.call(call.RemoteStopTransactionPayload(transaction_id=self.active_transaction_id or 1234))
+        return await self.call(call.RemoteStopTransaction(transaction_id=self.active_transaction_id or 1234))
