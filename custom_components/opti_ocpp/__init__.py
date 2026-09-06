@@ -15,24 +15,27 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
 
     cid = entry.data["charger_id"]
 
-    async def handle_service(call_data):
+    async def handle_service(service_call):
         instance = server.get_instance(cid)
         if not instance: return
-        op = call_data.service.split("_", 1)[1]
+
+        # Operation is everything after 'chargerid_'
+        op = service_call.service.split("_", 1)[1]
 
         if op == "initialise": await instance.initialise(entry.data["default_limit"])
         elif op == "charge": await instance.start_charge()
         elif op == "stop": await instance.stop_charge()
         elif op == "reset": await instance.soft_reset()
-        elif op == "limit": await instance.set_profile("TxProfile", call_data.data.get("limit", 6), 1, 2)
+        elif op == "limit": await instance.set_profile("TxProfile", service_call.data.get("limit", 6), 1, 2)
         elif op == "get_configuration":
             res = await instance.call(call.GetConfiguration())
             _LOGGER.info(f"Opti Config: {res}")
         elif op == "set_configuration":
-            await instance.call(call.ChangeConfiguration(key=call_data.data["key"], value=call_data.data["value"]))
+            await instance.call(call.ChangeConfiguration(key=service_call.data["key"], value=service_call.data["value"]))
 
-    for op in ["initialise", "charge", "stop", "reset", "limit", "get_configuration", "set_configuration"]:
-        hass.services.async_register(DOMAIN, f"{cid}_{op}", handle_service)
+    services = ["initialise", "charge", "stop", "reset", "limit", "get_configuration", "set_configuration"]
+    for service_name in services:
+        hass.services.async_register(DOMAIN, f"{cid}_{service_name}", handle_service)
 
     await hass.config_entries.async_forward_entry_setups(entry, ["sensor", "number"])
     return True

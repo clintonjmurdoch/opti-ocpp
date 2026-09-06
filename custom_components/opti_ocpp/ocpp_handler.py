@@ -5,7 +5,7 @@ import random
 from ocpp.routing import on
 from ocpp.v16 import ChargePoint as cp
 from ocpp.v16 import call, call_result
-from ocpp.v16.enums import RegistrationStatus, AuthorizationStatus, ResetType
+from ocpp.v16.enums import Action, RegistrationStatus, AuthorizationStatus, ResetType
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -20,23 +20,27 @@ class OptiOcppHandler(cp):
         self._on_meter_values = on_meter_values
         self._suspended_timer = None
 
-    @on('BootNotification')
+    @on(Action.BootNotification)
     async def on_boot_notification(self, charge_point_vendor, charge_point_model, **kwargs):
         if "7" in charge_point_model and "22" not in charge_point_model:
             self.phase_count = 1
         else:
             self.phase_count = 3
-        return call_result.BootNotification(current_time=datetime.now(timezone.utc).isoformat(), interval=30, status=RegistrationStatus.accepted)
+        return call_result.BootNotification(
+            current_time=datetime.now(timezone.utc).isoformat(),
+            interval=30,
+            status=RegistrationStatus.accepted
+        )
 
-    @on('Heartbeat')
+    @on(Action.Heartbeat)
     async def on_heartbeat(self):
         return call_result.Heartbeat(current_time=datetime.now(timezone.utc).isoformat())
 
-    @on('Authorize')
+    @on(Action.Authorize)
     async def on_authorize(self, id_tag, **kwargs):
         return call_result.Authorize(id_tag_info={'status': AuthorizationStatus.accepted})
 
-    @on('StatusNotification')
+    @on(Action.StatusNotification)
     async def on_status_notification(self, connector_id, status, **kwargs):
         self.status = status
         if self._on_status_change: await self._on_status_change(self.id, status)
@@ -44,22 +48,23 @@ class OptiOcppHandler(cp):
         else: self._stop_timer()
         return call_result.StatusNotification()
 
-    @on('StartTransaction')
-    async def on_start_transaction(self, **kwargs):
+    @on(Action.StartTransaction)
+    async def on_start_transaction(self, connector_id, id_tag, meter_start, timestamp, **kwargs):
         tid = 1234
         self.active_transaction_id = tid
         if self._on_transaction_start: await self._on_transaction_start(self.id, tid)
         return call_result.StartTransaction(transaction_id=tid, id_tag_info={'status': AuthorizationStatus.accepted})
 
-    @on('StopTransaction')
-    async def on_stop_transaction(self, **kwargs):
+    @on(Action.StopTransaction)
+    async def on_stop_transaction(self, meter_stop, timestamp, transaction_id, **kwargs):
         self.active_transaction_id = None
         if self._on_transaction_start: await self._on_transaction_start(self.id, None)
         self._stop_timer()
         return call_result.StopTransaction()
 
-    @on('MeterValues')
+    @on(Action.MeterValues)
     async def on_meter_values(self, connector_id, meter_value, transaction_id=None, **kwargs):
+        """Handle incoming meter values using Dataclass access (v0.23.0+)"""
         if transaction_id and self.active_transaction_id != transaction_id:
             self.active_transaction_id = transaction_id
             if self._on_transaction_start: await self._on_transaction_start(self.id, transaction_id)
@@ -67,32 +72,44 @@ class OptiOcppHandler(cp):
         if self._on_meter_values:
             data = {}
             for mv in meter_value:
-                for sv in mv.get('sampled_value', []):
-                    measurand = sv.get('measurand', 'Energy.Active.Import.Register')
-                    phase = sv.get('phase')
-                    val = sv.get('value')
+                # In v0.23.0, mv is a MeterValue object, and sv is a SampledValue object
+                for sv in getattr(mv, 'sampled_value', []):
+                    measurand = getattr(sv, 'measurand', 'Energy.Active.Import.Register')
+                    phase = getattr(sv, 'phase', None)
+                    val = getattr(sv, 'value', None)
 
-                    key = measurand
-                    if phase:
-                        key = f"{measurand}_{phase}"
+                    if val is not None:
+                        key = measurand
+                        if phase:
+                            key = f"{measurand}_{phase}"
+                        data[key] = val
 
-                    data[key] = val
-            await self._on_meter_values(self.id, data)
+            if data:
+                await self._on_meter_values(self.id, data)
 
         return call_result.MeterValues()
 
     # --- Actions ---
 
     async def initialise(self, limit):
-        opts = {'TxBeforeAcceptedEnabled':'true', 'AuthorizeRemoteTxRequests':'false', 'StopTransactionOnInvalidId':'false', 'UnlockConnectorOnEVSideDisconnect':'false'}
+        # Explicitly use Action enum for setting config to avoid casing issues
+        opts = {
+            'TxBeforeAcceptedEnabled': 'true',
+            'AuthorizeRemoteTxRequests': 'false',
+            'StopTransactionOnInvalidId': 'false',
+            'UnlockConnectorOnEVSideDisconnect': 'false'
+        }
         for k, v in opts.items():
-            try: await self.call(call.ChangeConfiguration(key=k, value=v))
-            except Exception: pass
+            try:
+                await self.call(call.ChangeConfiguration(key=k, value=v))
+            except Exception:
+                pass
         await self.set_profile("TxDefaultProfile", limit, 1, 1)
 
     async def set_profile(self, purpose, amps, conn=1, stack=1):
+        # Map purpose to a fixed ID slot
         id_map = {'ChargePointMaxProfile': 100, 'TxDefaultProfile': 200, 'TxProfile': 300}
-        profile_id = id_map.get(purpose, random.randint(1, 9999))
+        profile_id = id_map.get(purpose, 999)
 
         prof = {
             'chargingProfileId': profile_id,
@@ -101,7 +118,11 @@ class OptiOcppHandler(cp):
             'chargingProfileKind': 'Relative',
             'chargingSchedule': {
                 'chargingRateUnit': 'A',
-                'chargingSchedulePeriod': [{'startPeriod':0, 'limit':float(amps), 'numberPhases':self.phase_count}]
+                'chargingSchedulePeriod': [{
+                    'startPeriod': 0,
+                    'limit': float(amps),
+                    'numberPhases': self.phase_count
+                }]
             }
         }
         if purpose == "TxProfile" and self.active_transaction_id:

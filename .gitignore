@@ -3,3 +3,4 @@ __pycache__/
 *$py.class
 .DS_Store
 active_transaction.json
+.idea
