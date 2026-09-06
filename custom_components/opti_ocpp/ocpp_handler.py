@@ -30,14 +30,15 @@ class OptiOcppHandler(cp):
         self._on_transaction_start = on_transaction_start
         self._on_meter_values = on_meter_values
 
-    def _get_val(self, obj, attr, default=None):
-        res = getattr(obj, attr, default) if not isinstance(obj, dict) else obj.get(attr, default)
-        return res.value if hasattr(res, 'value') else res
+    def _safe_str(self, val):
+        """Extracts the string value from an Enum or object."""
+        return val.value if hasattr(val, 'value') else str(val) if val is not None else None
 
     @on(Action.BootNotification)
     async def on_boot_notification(self, charge_point_vendor, charge_point_model, **kwargs):
-        _LOGGER.info(f"Received Boot from {charge_point_vendor} ({charge_point_model})")
-        if "7" in charge_point_model and "22" not in charge_point_model: self.phase_count = 1
+        model_str = self._safe_str(charge_point_model)
+        _LOGGER.info(f"Received Boot from {charge_point_vendor} ({model_str})")
+        if "7" in model_str and "22" not in model_str: self.phase_count = 1
         return call_result.BootNotificationPayload(current_time=datetime.now(timezone.utc).isoformat(), interval=30, status=RegistrationStatus.accepted)
 
     @on(Action.Heartbeat)
@@ -50,7 +51,7 @@ class OptiOcppHandler(cp):
 
     @on(Action.StatusNotification)
     async def on_status_notification(self, connector_id, error_code, status, **kwargs):
-        status_str = status.value if hasattr(status, 'value') else status
+        status_str = self._safe_str(status)
         _LOGGER.info(f"[STATUS] {self.id} -> {status_str}")
         self.status = status_str
         if self._on_status_change: self._on_status_change(self.id, status_str)
@@ -72,9 +73,10 @@ class OptiOcppHandler(cp):
         return call_result.StopTransactionPayload()
 
     @on(Action.MeterValues)
-    async def on_meter_values(self, connector_id, meter_value, transaction_id=None, **kwargs):
+    async def on_meter_values(self, connector_id, transaction_id, meter_value, **kwargs):
+        """Corrected order: Connector -> Transaction -> Data List."""
         try:
-            _LOGGER.info(f"METER HANDLER: Received values for Conn {connector_id}, TX {transaction_id}")
+            _LOGGER.info(f"METER HANDLER: Received payload for Conn {connector_id}")
             if transaction_id and self.active_transaction_id != transaction_id:
                 self.active_transaction_id = transaction_id
                 if self._on_transaction_start: self._on_transaction_start(self.id, transaction_id)
@@ -82,29 +84,27 @@ class OptiOcppHandler(cp):
             if self._on_meter_values:
                 data = {}
                 for mv in meter_value:
-                    sv_list = getattr(mv, 'sampled_value', []) if not isinstance(mv, dict) else mv.get('sampledValue', [])
+                    # 'mv' is a MeterValue object with a 'sampled_value' list
+                    sv_list = getattr(mv, 'sampled_value', [])
                     for sv in sv_list:
-                        meas = self._get_val(sv, 'measurand', 'Energy.Active.Import.Register')
-                        phase = self._get_val(sv, 'phase')
-                        val = self._get_val(sv, 'value')
-                        if val is not None:
+                        # Extract fields using our Enum-safe helper
+                        meas = self._safe_str(getattr(sv, 'measurand', 'Energy.Active.Import.Register'))
+                        phase = self._safe_str(getattr(sv, 'phase', None))
+                        val = self._safe_str(getattr(sv, 'value', None))
+
+                        if val:
                             key = f"{meas}_{phase}" if phase else meas
                             data[key] = val
 
                 if data:
-                    _LOGGER.info(f"[METER] Parsed Keys: {list(data.keys())}")
+                    _LOGGER.info(f"[METER] Parsed {len(data)} metrics.")
                     self._on_meter_values(self.id, data)
         except Exception as e:
-            _LOGGER.error(f"MeterValues parsing error: {e}")
+            _LOGGER.error(f"MeterValues parser crashed: {e}")
         return call_result.MeterValuesPayload()
 
     async def initialise(self, limit):
-        opts = {
-            'TxBeforeAcceptedEnabled': 'true',
-            'AuthorizeRemoteTxRequests': 'false',
-            'StopTransactionOnInvalidId': 'false',
-            'UnlockConnectorOnEVSideDisconnect': 'false'
-        }
+        opts = {'TxBeforeAcceptedEnabled': 'true', 'AuthorizeRemoteTxRequests': 'false', 'StopTransactionOnInvalidId': 'false', 'UnlockConnectorOnEVSideDisconnect': 'false'}
         for k, v in opts.items():
             try: await self.call(call.ChangeConfigurationPayload(key=k, value=v))
             except Exception: pass
@@ -115,12 +115,7 @@ class OptiOcppHandler(cp):
         except Exception: pass
 
     async def clear_profiles(self):
-        try:
-            res = await self.call(call.ClearChargingProfilePayload())
-            _LOGGER.info(f"Clear Profiles result: {res.status}")
-            return res
-        except Exception as e:
-            _LOGGER.error(f"Failed to clear profiles: {e}")
+        return await self.call(call.ClearChargingProfilePayload())
 
     async def set_profile(self, purpose, amps, conn=1, stack=20):
         id_map = {'ChargePointMaxProfile': 100, 'TxDefaultProfile': 200, 'TxProfile': 300}
@@ -138,4 +133,4 @@ class OptiOcppHandler(cp):
         return await self.call(call.RemoteStartTransactionPayload(id_tag='PLUG_PLAY_IDTAG', connector_id=1))
 
     async def stop_charge(self):
-        return await self.call(call.RemoteStopTransaction(transaction_id=self.active_transaction_id or 1234))
+        return await self.call(call.RemoteStopTransactionPayload(transaction_id=self.active_transaction_id or 1234))

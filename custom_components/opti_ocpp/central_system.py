@@ -52,6 +52,8 @@ class OptiCentralSystem:
         self.instances[path] = handler
 
         loop_task = asyncio.create_task(handler.start())
+
+        # Bridge to main loop for async initialization
         self.hass.loop.call_soon_threadsafe(
             lambda: self.hass.async_create_task(handler.initialise(self.entry.data["default_limit"]))
         )
@@ -75,17 +77,20 @@ class OptiCentralSystem:
 
     def _handle_tid_update(self, cid, tid):
         self.hass.loop.call_soon_threadsafe(
-            lambda: self.hass.async_create_task(self._store.async_save({"active_transaction_id": tid}))
+            lambda: self.hass.async_create_task(self._async_save_tid(tid))
         )
+
+    async def _async_save_tid(self, tid):
+        self._cached_tid = tid
+        await self._store.async_save({"active_transaction_id": tid})
 
     def _handle_meter_values(self, cid, data):
-        """Thread-safe meter data bridge. Fixed lambda target."""
+        """Thread-safe meter values bridge."""
         self.hass.loop.call_soon_threadsafe(
-            lambda: self.hass.async_create_task(self._async_update_meter_data(cid, data))
+            lambda: self.hass.async_create_task(self._async_update_meter(cid, data))
         )
 
-    async def _async_update_meter_data(self, cid, data):
-        """Processes the mapped meter data on the HA main loop."""
+    async def _async_update_meter(self, cid, data):
         mapping = {
             "Energy.Active.Import.Register": "energy",
             "Power.Active.Import": "power",
