@@ -41,7 +41,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     for service_name in services:
         hass.services.async_register(DOMAIN, service_name, handle_service)
 
-    await hass.config_entries.async_forward_entry_setups(entry, ["sensor", "number"])
+    # Forwarding to sensor, number, and the new switch platform
+    await hass.config_entries.async_forward_entry_setups(entry, ["sensor", "number", "switch"])
     return True
 
 async def async_unload_entry(hass, entry):

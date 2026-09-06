@@ -9,6 +9,16 @@ from ocpp.v16.enums import Action, RegistrationStatus, AuthorizationStatus, Rese
 
 _LOGGER = logging.getLogger(__name__)
 
+# --- Library Compatibility Bridge ---
+# Some versions of ocpp v0.23.0+ look for lowercase attributes on the Action enum.
+if not hasattr(Action, 'meter_values'):
+    Action.meter_values = Action.MeterValues
+if not hasattr(Action, 'status_notification'):
+    Action.status_notification = Action.StatusNotification
+if not hasattr(Action, 'boot_notification'):
+    Action.boot_notification = Action.BootNotification
+# ------------------------------------
+
 class OptiOcppHandler(cp):
     def __init__(self, id, connection, on_status_change=None, on_transaction_start=None, on_meter_values=None, initial_tid=None):
         super().__init__(id, connection)

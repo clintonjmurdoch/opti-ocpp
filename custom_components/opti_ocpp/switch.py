@@ -1,28 +1,25 @@
 import logging
-from homeassistant.core import callback
-from homeassistant.components.number import NumberEntity
+from homeassistant.components.switch import SwitchEntity
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from .const import DOMAIN, OPTI_DATA_UPDATE
 
 _LOGGER = logging.getLogger(__name__)
 
 async def async_setup_entry(hass, entry, async_add_entities):
-    async_add_entities([OptiLimitSlider(hass, entry)])
+    cid = entry.data["charger_id"]
+    async_add_entities([OptiChargeSwitch(hass, entry)])
 
-class OptiLimitSlider(NumberEntity):
+class OptiChargeSwitch(SwitchEntity):
     _attr_should_poll = False
 
     def __init__(self, hass, entry):
         self.hass = hass
         self.entry_id = entry.entry_id
         self.cid = entry.data["charger_id"]
-        self._attr_name = f"Opti {self.cid} Limit"
-        self._attr_unique_id = f"opti_{self.cid}_limit"
-        self._attr_native_min_value = 0 # Requested 0-32
-        self._attr_native_max_value = 32
-        self._attr_native_step = 1
-        self._attr_native_value = entry.data["default_limit"]
-        self._attr_icon = "mdi:current-ac"
+        self._attr_name = f"Opti {self.cid} Charge Switch"
+        self._attr_unique_id = f"opti_{self.cid}_charge_switch"
+        self._attr_icon = "mdi:ev-station"
+        self._is_on = False
         self._available = False
 
     async def async_added_to_hass(self):
@@ -35,23 +32,30 @@ class OptiLimitSlider(NumberEntity):
             )
         )
 
-    @callback
     def _update_callback(self, data):
-        """Update availability when charger connects/disconnects."""
+        """Update switch state based on charger status."""
         self._available = True
+        if "status" in data:
+            # We consider the switch "ON" if it is actually charging
+            self._is_on = (data["status"] == "Charging")
         self.async_write_ha_state()
+
+    @property
+    def is_on(self):
+        return self._is_on
 
     @property
     def available(self):
         return self._available
 
-    async def async_set_native_value(self, value):
-        self._attr_native_value = value
+    async def async_turn_on(self, **kwargs):
         server = self.hass.data[DOMAIN][self.entry_id]
         instance = server.get_instance(self.cid)
+        if instance:
+            await instance.start_charge()
 
-        # We strictly use TxProfile for the slider as requested.
-        if instance and instance.status == "Charging":
-            await instance.set_profile("TxProfile", value, conn=1, stack=2)
-
-        self.async_write_ha_state()
+    async def async_turn_off(self, **kwargs):
+        server = self.hass.data[DOMAIN][self.entry_id]
+        instance = server.get_instance(self.cid)
+        if instance:
+            await instance.stop_charge()

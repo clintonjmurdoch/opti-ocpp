@@ -1,4 +1,5 @@
 import logging
+from homeassistant.core import callback
 from homeassistant.components.sensor import SensorEntity, SensorDeviceClass, SensorStateClass
 from homeassistant.const import UnitOfEnergy, UnitOfPower, UnitOfElectricCurrent, UnitOfElectricPotential
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
@@ -36,7 +37,6 @@ class OptiGenericSensor(SensorEntity):
         self._attr_native_unit_of_measurement = unit
         self._attr_device_class = device_class
         self._attr_state_class = state_class
-        # Initialize status as Disconnected, others as None
         self._value = "Disconnected" if suffix == "status" else None
 
     async def async_added_to_hass(self):
@@ -49,6 +49,7 @@ class OptiGenericSensor(SensorEntity):
             )
         )
 
+    @callback
     def _update_callback(self, data):
         """Update the sensor's value."""
         if self.suffix in data:

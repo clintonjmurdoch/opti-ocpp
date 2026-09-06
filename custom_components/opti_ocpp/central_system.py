@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import websockets
+from homeassistant.core import callback
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from .ocpp_handler import OptiOcppHandler
@@ -65,11 +66,7 @@ class OptiCentralSystem:
 
         self.instances[path] = handler
 
-        # FIX: Start the message listener FIRST to avoid deadlocking initialise()
-        # The listener processes the responses that initialise() waits for.
         loop_task = asyncio.create_task(handler.start())
-
-        # Push initial settings in a non-blocking task
         asyncio.create_task(self._safe_initialise(handler))
 
         try:
@@ -79,7 +76,7 @@ class OptiCentralSystem:
         finally:
             _LOGGER.info(f"Charger {path} session ended.")
             self.instances.pop(path, None)
-            async_dispatcher_send(self.hass, OPTI_DATA_UPDATE.format(path), {"status": "Disconnected"})
+            self._safe_dispatch(path, {"status": "Disconnected"})
 
     async def _safe_initialise(self, handler):
         """Wraps the blocking initialise call with logging."""
@@ -92,7 +89,7 @@ class OptiCentralSystem:
 
     async def _update_status(self, cid, status):
         _LOGGER.info(f"Charger {cid} reported status: {status}")
-        async_dispatcher_send(self.hass, OPTI_DATA_UPDATE.format(cid), {"status": status})
+        self._safe_dispatch(cid, {"status": status})
         if status == "Charging":
             await self._apply_limit(cid)
 
@@ -121,7 +118,16 @@ class OptiCentralSystem:
                 update_payload[ha_suffix] = data[ocpp_key]
 
         if update_payload:
-            async_dispatcher_send(self.hass, OPTI_DATA_UPDATE.format(cid), update_payload)
+            self._safe_dispatch(cid, update_payload)
+
+    def _safe_dispatch(self, cid, payload):
+        """
+        Thread-safe dispatcher.
+        Ensures that the dispatcher_send is called on the main HA event loop.
+        """
+        self.hass.loop.call_soon_threadsafe(
+            async_dispatcher_send, self.hass, OPTI_DATA_UPDATE.format(cid), payload
+        )
 
     async def _apply_limit(self, cid):
         state = self.hass.states.get(f"number.opti_{cid}_limit")
