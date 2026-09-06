@@ -37,7 +37,7 @@ class OptiLimitSlider(NumberEntity):
 
     @callback
     def _update_callback(self, data):
-        """Update availability when charger connects/disconnects."""
+        """Update availability when charger connects."""
         self._available = True
         self.async_write_ha_state()
 
@@ -50,7 +50,8 @@ class OptiLimitSlider(NumberEntity):
         server = self.hass.data[DOMAIN][self.entry_id]
         instance = server.get_instance(self.cid)
 
+        # Increased stack to 20 to override any previous test harness values
         if instance and instance.status == "Charging":
-            await instance.set_profile("TxProfile", value, conn=1, stack=2)
+            await instance.set_profile("TxProfile", value, conn=1, stack=20)
 
         self.async_write_ha_state()

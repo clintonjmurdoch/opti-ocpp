@@ -9,7 +9,7 @@ from ocpp.v16.enums import Action, RegistrationStatus, AuthorizationStatus, Rese
 
 _LOGGER = logging.getLogger(__name__)
 
-# --- Library Casing Fix ---
+# --- Library Case Normalization ---
 if not hasattr(Action, 'meter_values'): Action.meter_values = Action.MeterValues
 if not hasattr(Action, 'status_notification'): Action.status_notification = Action.StatusNotification
 if not hasattr(Action, 'boot_notification'): Action.boot_notification = Action.BootNotification
@@ -18,6 +18,7 @@ if not hasattr(Action, 'authorize'): Action.authorize = Action.Authorize
 if not hasattr(Action, 'start_transaction'): Action.start_transaction = Action.StartTransaction
 if not hasattr(Action, 'stop_transaction'): Action.stop_transaction = Action.StopTransaction
 if not hasattr(Action, 'trigger_message'): Action.trigger_message = Action.TriggerMessage
+if not hasattr(Action, 'clear_charging_profile'): Action.clear_charging_profile = Action.ClearChargingProfile
 
 class OptiOcppHandler(cp):
     def __init__(self, id, connection, on_status_change=None, on_transaction_start=None, on_meter_values=None, initial_tid=None):
@@ -31,7 +32,6 @@ class OptiOcppHandler(cp):
 
     @on(Action.BootNotification)
     async def on_boot_notification(self, charge_point_vendor, charge_point_model, **kwargs):
-        _LOGGER.info(f"Received Boot from {charge_point_vendor} ({charge_point_model})")
         if "7" in charge_point_model and "22" not in charge_point_model: self.phase_count = 1
         return call_result.BootNotificationPayload(current_time=datetime.now(timezone.utc).isoformat(), interval=30, status=RegistrationStatus.accepted)
 
@@ -83,26 +83,21 @@ class OptiOcppHandler(cp):
         return call_result.MeterValuesPayload()
 
     async def initialise(self, limit):
-        opts = {
-            'TxBeforeAcceptedEnabled': 'true',
-            'AuthorizeRemoteTxRequests': 'false',
-            'StopTransactionOnInvalidId': 'false',
-            'UnlockConnectorOnEVSideDisconnect': 'false',
-            'MeterValueSampleInterval': '30', # Ensure data flows every 30s
-            'MeterValuesSampledData': 'Energy.Active.Import.Register,Power.Active.Import,Voltage,Current.Import'
-        }
+        opts = {'TxBeforeAcceptedEnabled': 'true', 'AuthorizeRemoteTxRequests': 'false', 'StopTransactionOnInvalidId': 'false', 'UnlockConnectorOnEVSideDisconnect': 'false'}
         for k, v in opts.items():
             try: await self.call(call.ChangeConfigurationPayload(key=k, value=v))
             except Exception: pass
         await self.set_profile("TxDefaultProfile", limit, 1, 1)
-
-        # PROACTIVE SYNC
         try:
             await self.call(call.TriggerMessagePayload(requested_message='StatusNotification', connector_id=1))
             await self.call(call.TriggerMessagePayload(requested_message='MeterValues', connector_id=1))
         except Exception: pass
 
-    async def set_profile(self, purpose, amps, conn=1, stack=1):
+    async def clear_profiles(self):
+        return await self.call(call.ClearChargingProfilePayload())
+
+    async def set_profile(self, purpose, amps, conn=1, stack=20):
+        """Standard profile builder with Stack Level 20 Priority"""
         id_map = {'ChargePointMaxProfile': 100, 'TxDefaultProfile': 200, 'TxProfile': 300}
         prof = {
             'chargingProfileId': id_map.get(purpose, 999),

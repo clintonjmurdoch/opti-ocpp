@@ -6,15 +6,17 @@ stop:
   description: "Stops the active charging session."
 reset:
   description: "Performs a soft reboot of the charger's OCPP module."
+clear_profiles:
+  description: "Wipes all stored charging profiles from the charger's memory."
 limit:
-  description: "Sets a temporary current limit for the active session."
+  description: "Sets a temporary current limit for the active session (Stack Level 20)."
   fields:
     limit:
-      description: "Amperage limit (6-32)"
+      description: "Amperage limit (0-32)"
       example: 10
       selector:
         number:
-          min: 6
+          min: 0
           max: 32
           unit_of_measurement: A
 get_configuration:

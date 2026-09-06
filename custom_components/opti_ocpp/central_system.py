@@ -24,36 +24,23 @@ class OptiCentralSystem:
         data = await self._store.async_load()
         if data:
             self._cached_tid = data.get("active_transaction_id")
-            _LOGGER.info(f"Loaded persistent Transaction ID: {self._cached_tid}")
 
-        _LOGGER.info(f"Starting SEVR Opti OCPP server on port {self.port}...")
         try:
             self._server = await websockets.serve(
-                self._on_connect,
-                "0.0.0.0",
-                self.port,
-                subprotocols=["ocpp1.6"]
+                self._on_connect, "0.0.0.0", self.port, subprotocols=["ocpp1.6"]
             )
-            _LOGGER.info(f"OCPP Server is now listening on 0.0.0.0:{self.port}")
+            _LOGGER.info(f"OCPP Server listening on port {self.port}")
         except Exception as e:
-            _LOGGER.error(f"Failed to start OCPP server: {e}")
+            _LOGGER.error(f"Failed to start server: {e}")
 
     async def stop(self):
         if self._server:
             self._server.close()
             await self._server.wait_closed()
-            _LOGGER.info("OCPP Server stopped.")
 
     async def _on_connect(self, websocket):
-        """Handle new incoming WebSocket connections."""
         path = websocket.request.path.strip('/')
-        _LOGGER.info(f"Connection attempt from {websocket.remote_address} at path: /{path}")
-
-        if path != self.charger_id:
-            _LOGGER.warning(f"Connection rejected: Path mismatch (Expected: /{self.charger_id})")
-            return
-
-        _LOGGER.info(f"Charger '{path}' verified.")
+        if path != self.charger_id: return
 
         handler = OptiOcppHandler(
             id=path,
@@ -65,36 +52,29 @@ class OptiCentralSystem:
         )
         self.instances[path] = handler
 
-        # Start the OCPP event loop
+        # Start listener and initialise in background
         loop_task = asyncio.create_task(handler.start())
-
-        # Safe-trigger initialisation in background
         self.hass.add_job(self._safe_initialise(handler))
 
         try: await loop_task
-        except Exception: pass
         finally:
-            _LOGGER.info(f"Charger {path} session ended.")
             self.instances.pop(path, None)
             self._safe_dispatch(path, {"status": "Disconnected"})
 
     async def _safe_initialise(self, handler):
-        try:
-            await handler.initialise(self.entry.data["default_limit"])
-            _LOGGER.info(f"Auto-initialisation sequence complete for {handler.id}.")
-        except Exception as e:
-            _LOGGER.error(f"Initialisation failed for {handler.id}: {e}")
+        await handler.initialise(self.entry.data["default_limit"])
 
-    async def _update_status(self, cid, status):
+    def _update_status(self, cid, status):
         self._safe_dispatch(cid, {"status": status})
         if status == "Charging":
             self.hass.add_job(self._apply_limit(cid))
 
-    async def _handle_tid_update(self, cid, tid):
+    def _handle_tid_update(self, cid, tid):
         self._cached_tid = tid
         self.hass.add_job(self._store.async_save({"active_transaction_id": tid}))
 
-    async def _handle_meter_values(self, cid, data):
+    def _handle_meter_values(self, cid, data):
+        """Bridges raw measurands to HA sensors (Thread-Safe)"""
         mapping = {
             "Energy.Active.Import.Register": "energy",
             "Power.Active.Import": "power",
@@ -116,18 +96,14 @@ class OptiCentralSystem:
             self._safe_dispatch(cid, update_payload)
 
     def _safe_dispatch(self, cid, payload):
-        """
-        Thread-safe bridge to dispatcher.
-        Uses call_soon_threadsafe to guarantee execution on HA's main event loop.
-        """
-        self.hass.loop.call_soon_threadsafe(
+        """Official HA pattern to bridge external threads to the event loop."""
+        self.hass.add_job(
             async_dispatcher_send, self.hass, OPTI_DATA_UPDATE.format(cid), payload
         )
 
     async def _apply_limit(self, cid):
         state = self.hass.states.get(f"number.opti_{cid}_limit")
         if state and cid in self.instances:
-            limit = float(state.state)
-            await self.instances[cid].set_profile("TxProfile", limit, conn=1, stack=2)
+            await self.instances[cid].set_profile("TxProfile", float(state.state), conn=1, stack=20)
 
     def get_instance(self, cid): return self.instances.get(cid)

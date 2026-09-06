@@ -9,7 +9,6 @@ from ocpp.v16.enums import ResetType
 _LOGGER = logging.getLogger(__name__)
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
-    """Set up Opti OCPP from a config entry."""
     server = OptiCentralSystem(hass, entry)
     await server.start()
 
@@ -30,23 +29,22 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         elif op == "charge": await instance.start_charge()
         elif op == "stop": await instance.stop_charge()
         elif op == "reset": await instance.call(call.ResetPayload(type=ResetType.soft))
-        elif op == "limit": await instance.set_profile("TxProfile", service_call.data.get("limit", 6), 1, 2)
+        elif op == "clear_profiles": await instance.clear_profiles()
+        elif op == "limit": await instance.set_profile("TxProfile", service_call.data.get("limit", 6), 1, 20)
         elif op == "get_configuration":
             res = await instance.call(call.GetConfigurationPayload())
             _LOGGER.info(f"Opti Config: {res}")
         elif op == "set_configuration":
             await instance.call(call.ChangeConfigurationPayload(key=service_call.data["key"], value=service_call.data["value"]))
 
-    services = ["initialise", "charge", "stop", "reset", "limit", "get_configuration", "set_configuration"]
+    services = ["initialise", "charge", "stop", "reset", "clear_profiles", "limit", "get_configuration", "set_configuration"]
     for service_name in services:
         hass.services.async_register(DOMAIN, service_name, handle_service)
 
-    # Forwarding to sensor, number, and the new switch platform
     await hass.config_entries.async_forward_entry_setups(entry, ["sensor", "number", "switch"])
     return True
 
 async def async_unload_entry(hass, entry):
-    """Unload a config entry."""
     server = hass.data[DOMAIN].pop(entry.entry_id)
     await server.stop()
     return True
