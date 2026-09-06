@@ -40,7 +40,7 @@ class OptiGenericSensor(SensorEntity):
 
     async def async_added_to_hass(self):
         """Register callbacks."""
-        self.async_on_deactivate(
+        self.async_on_remove(
             async_dispatcher_connect(
                 self.hass,
                 OPTI_DATA_UPDATE.format(self.cid),
