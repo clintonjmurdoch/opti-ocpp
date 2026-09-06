@@ -2,8 +2,9 @@ import asyncio
 import logging
 import websockets
 from homeassistant.helpers.storage import Store
+from homeassistant.helpers.dispatcher import async_dispatcher_send
 from .ocpp_handler import OptiOcppHandler
-from .const import DOMAIN
+from .const import DOMAIN, OPTI_DATA_UPDATE
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -45,10 +46,14 @@ class OptiCentralSystem:
         self.instances[path] = handler
         await handler.initialise(self.entry.data["default_limit"])
         try: await handler.start()
-        finally: self.instances.pop(path, None)
+        finally:
+            self.instances.pop(path, None)
+            async_dispatcher_send(self.hass, OPTI_DATA_UPDATE.format(path), {"status": "Disconnected"})
 
     async def _update_status(self, cid, status):
-        self.hass.states.async_set(f"sensor.opti_{cid}_status", status)
+        # Notify entities via dispatcher
+        async_dispatcher_send(self.hass, OPTI_DATA_UPDATE.format(cid), {"status": status})
+
         if status == "Charging":
             await self._apply_limit(cid)
 
@@ -57,7 +62,7 @@ class OptiCentralSystem:
         await self._store.async_save({"active_transaction_id": tid})
 
     async def _handle_meter_values(self, cid, data):
-        """Maps incoming raw meter measurands to HA sensor states"""
+        """Maps incoming raw meter measurands to HA sensor suffixes"""
         mapping = {
             "Energy.Active.Import.Register": "energy",
             "Power.Active.Import": "power",
@@ -71,9 +76,13 @@ class OptiCentralSystem:
             "Voltage_L2-N": "voltage_l2",
             "Voltage_L3-N": "voltage_l3"
         }
+        update_payload = {}
         for ocpp_key, ha_suffix in mapping.items():
             if ocpp_key in data:
-                self.hass.states.async_set(f"sensor.opti_{cid}_{ha_suffix}", data[ocpp_key])
+                update_payload[ha_suffix] = data[ocpp_key]
+
+        if update_payload:
+            async_dispatcher_send(self.hass, OPTI_DATA_UPDATE.format(cid), update_payload)
 
     async def _apply_limit(self, cid):
         state = self.hass.states.get(f"number.opti_{cid}_limit")
