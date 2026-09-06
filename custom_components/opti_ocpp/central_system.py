@@ -53,33 +53,30 @@ class OptiCentralSystem:
         self.instances[path] = handler
 
         loop_task = asyncio.create_task(handler.start())
-        # Use HA's safe task creation for background initialization
-        self.hass.async_create_task(self._safe_initialise(handler))
+        self.hass.add_job(self._safe_initialise, handler)
 
         try: await loop_task
         finally:
             self.instances.pop(path, None)
             self._safe_dispatch(path, {"status": "Disconnected"})
 
-    async def _safe_initialise(self, handler):
-        try:
-            await handler.initialise(self.entry.data["default_limit"])
-        except Exception as e:
-            _LOGGER.error(f"Auto-init failed: {e}")
+    def _safe_initialise(self, handler):
+        self.hass.async_create_task(handler.initialise(self.entry.data["default_limit"]))
 
     async def _update_status(self, cid, status):
-        """Async callback for status changes."""
         self._safe_dispatch(cid, {"status": status})
         if status == "Charging":
             self.hass.async_create_task(self._apply_limit(cid))
 
     async def _handle_tid_update(self, cid, tid):
-        """Async callback for transaction ID persistence."""
         self._cached_tid = tid
-        await self._store.async_save({"active_transaction_id": tid})
+        self.hass.async_create_task(self._store.async_save({"active_transaction_id": tid}))
 
     async def _handle_meter_values(self, cid, data):
         """Async callback for meter data processing."""
+        # DEBUG: Print the raw keys being generated
+        _LOGGER.debug(f"Meter data received for {cid}: {list(data.keys())}")
+
         mapping = {
             "Energy.Active.Import.Register": "energy",
             "Power.Active.Import": "power",
@@ -101,11 +98,7 @@ class OptiCentralSystem:
             self._safe_dispatch(cid, update_payload)
 
     def _safe_dispatch(self, cid, payload):
-        """
-        Thread-safe bridge.
-        Uses add_job to force execution onto the Home Assistant main thread.
-        """
-        self.hass.add_job(
+        self.hass.loop.call_soon_threadsafe(
             async_dispatcher_send, self.hass, OPTI_DATA_UPDATE.format(cid), payload
         )
 

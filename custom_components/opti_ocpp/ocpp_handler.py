@@ -9,7 +9,7 @@ from ocpp.v16.enums import Action, RegistrationStatus, AuthorizationStatus, Rese
 
 _LOGGER = logging.getLogger(__name__)
 
-# --- Library Case Normalization ---
+# --- Library Casing Fix ---
 if not hasattr(Action, 'meter_values'): Action.meter_values = Action.MeterValues
 if not hasattr(Action, 'status_notification'): Action.status_notification = Action.StatusNotification
 if not hasattr(Action, 'boot_notification'): Action.boot_notification = Action.BootNotification
@@ -18,6 +18,7 @@ if not hasattr(Action, 'authorize'): Action.authorize = Action.Authorize
 if not hasattr(Action, 'start_transaction'): Action.start_transaction = Action.StartTransaction
 if not hasattr(Action, 'stop_transaction'): Action.stop_transaction = Action.StopTransaction
 if not hasattr(Action, 'trigger_message'): Action.trigger_message = Action.TriggerMessage
+if not hasattr(Action, 'clear_charging_profile'): Action.clear_charging_profile = Action.ClearChargingProfile
 
 class OptiOcppHandler(cp):
     def __init__(self, id, connection, on_status_change=None, on_transaction_start=None, on_meter_values=None, initial_tid=None):
@@ -28,6 +29,14 @@ class OptiOcppHandler(cp):
         self._on_status_change = on_status_change
         self._on_transaction_start = on_transaction_start
         self._on_meter_values = on_meter_values
+
+    def _get_val(self, obj, attr, default=None):
+        """Helper to get string value from either dict or dataclass/enum."""
+        res = getattr(obj, attr, default) if not isinstance(obj, dict) else obj.get(attr, default)
+        # If the result is an Enum member, get its .value (the string)
+        if hasattr(res, 'value'):
+            return res.value
+        return res
 
     @on(Action.BootNotification)
     async def on_boot_notification(self, charge_point_vendor, charge_point_model, **kwargs):
@@ -44,9 +53,11 @@ class OptiOcppHandler(cp):
 
     @on(Action.StatusNotification)
     async def on_status_notification(self, connector_id, error_code, status, **kwargs):
-        self.status = status
+        # status is an Enum member in v0.23.0
+        status_str = status.value if hasattr(status, 'value') else status
+        self.status = status_str
         if self._on_status_change:
-            await self._on_status_change(self.id, status)
+            await self._on_status_change(self.id, status_str)
         return call_result.StatusNotificationPayload()
 
     @on(Action.StartTransaction)
@@ -74,12 +85,11 @@ class OptiOcppHandler(cp):
             if self._on_meter_values:
                 data = {}
                 for mv in meter_value:
-                    # Robust attribute access
                     sv_list = getattr(mv, 'sampled_value', []) if not isinstance(mv, dict) else mv.get('sampledValue', [])
                     for sv in sv_list:
-                        meas = getattr(sv, 'measurand', 'Energy.Active.Import.Register') if not isinstance(sv, dict) else sv.get('measurand')
-                        phase = getattr(sv, 'phase', None) if not isinstance(sv, dict) else sv.get('phase')
-                        val = getattr(sv, 'value', None) if not isinstance(sv, dict) else sv.get('value')
+                        meas = self._get_val(sv, 'measurand', 'Energy.Active.Import.Register')
+                        phase = self._get_val(sv, 'phase')
+                        val = self._get_val(sv, 'value')
                         if val is not None:
                             key = f"{meas}_{phase}" if phase else meas
                             data[key] = val
