@@ -18,7 +18,6 @@ if not hasattr(Action, 'authorize'): Action.authorize = Action.Authorize
 if not hasattr(Action, 'start_transaction'): Action.start_transaction = Action.StartTransaction
 if not hasattr(Action, 'stop_transaction'): Action.stop_transaction = Action.StopTransaction
 if not hasattr(Action, 'trigger_message'): Action.trigger_message = Action.TriggerMessage
-if not hasattr(Action, 'clear_charging_profile'): Action.clear_charging_profile = Action.ClearChargingProfile
 
 class OptiOcppHandler(cp):
     def __init__(self, id, connection, on_status_change=None, on_transaction_start=None, on_meter_values=None, initial_tid=None):
@@ -75,7 +74,7 @@ class OptiOcppHandler(cp):
             if self._on_meter_values:
                 data = {}
                 for mv in meter_value:
-                    # Robust access for both v0.23.0 Dataclass and dict
+                    # Robust attribute access
                     sv_list = getattr(mv, 'sampled_value', []) if not isinstance(mv, dict) else mv.get('sampledValue', [])
                     for sv in sv_list:
                         meas = getattr(sv, 'measurand', 'Energy.Active.Import.Register') if not isinstance(sv, dict) else sv.get('measurand')
@@ -86,8 +85,7 @@ class OptiOcppHandler(cp):
                             data[key] = val
                 if data: await self._on_meter_values(self.id, data)
         except Exception as e:
-            _LOGGER.error(f"Error parsing MeterValues: {e}")
-
+            _LOGGER.error(f"MeterValues parsing error: {e}")
         return call_result.MeterValuesPayload()
 
     async def initialise(self, limit):

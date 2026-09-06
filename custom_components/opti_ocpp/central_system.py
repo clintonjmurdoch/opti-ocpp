@@ -53,7 +53,8 @@ class OptiCentralSystem:
         self.instances[path] = handler
 
         loop_task = asyncio.create_task(handler.start())
-        self.hass.add_job(self._safe_initialise(handler))
+        # Use HA's safe task creation for background initialization
+        self.hass.async_create_task(self._safe_initialise(handler))
 
         try: await loop_task
         finally:
@@ -61,7 +62,10 @@ class OptiCentralSystem:
             self._safe_dispatch(path, {"status": "Disconnected"})
 
     async def _safe_initialise(self, handler):
-        await handler.initialise(self.entry.data["default_limit"])
+        try:
+            await handler.initialise(self.entry.data["default_limit"])
+        except Exception as e:
+            _LOGGER.error(f"Auto-init failed: {e}")
 
     async def _update_status(self, cid, status):
         """Async callback for status changes."""
@@ -97,8 +101,11 @@ class OptiCentralSystem:
             self._safe_dispatch(cid, update_payload)
 
     def _safe_dispatch(self, cid, payload):
-        """Ensures dispatcher call is thread-safe on the main HA loop."""
-        self.hass.loop.call_soon_threadsafe(
+        """
+        Thread-safe bridge.
+        Uses add_job to force execution onto the Home Assistant main thread.
+        """
+        self.hass.add_job(
             async_dispatcher_send, self.hass, OPTI_DATA_UPDATE.format(cid), payload
         )
 
