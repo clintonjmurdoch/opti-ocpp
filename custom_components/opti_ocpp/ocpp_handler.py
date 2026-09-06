@@ -33,7 +33,7 @@ class OptiOcppHandler(cp):
         )
 
     @on(Action.Heartbeat)
-    async def on_heartbeat(self):
+    async def on_heartbeat(self, **kwargs):
         return call_result.Heartbeat(current_time=datetime.now(timezone.utc).isoformat())
 
     @on(Action.Authorize)
@@ -41,58 +41,62 @@ class OptiOcppHandler(cp):
         return call_result.Authorize(id_tag_info={'status': AuthorizationStatus.accepted})
 
     @on(Action.StatusNotification)
-    async def on_status_notification(self, connector_id, status, **kwargs):
+    async def on_status_notification(self, connector_id, error_code, status, **kwargs):
+        """Explicitly capture status from the correct positional/keyword argument"""
         self.status = status
-        if self._on_status_change: await self._on_status_change(self.id, status)
-        if status == "SuspendedEV": self._start_timer()
-        else: self._stop_timer()
+        if self._on_status_change:
+            await self._on_status_change(self.id, status)
+
+        if status == "SuspendedEV":
+            self._start_timer()
+        else:
+            self._stop_timer()
         return call_result.StatusNotification()
 
     @on(Action.StartTransaction)
     async def on_start_transaction(self, connector_id, id_tag, meter_start, timestamp, **kwargs):
         tid = 1234
         self.active_transaction_id = tid
-        if self._on_transaction_start: await self._on_transaction_start(self.id, tid)
+        if self._on_transaction_start:
+            await self._on_transaction_start(self.id, tid)
         return call_result.StartTransaction(transaction_id=tid, id_tag_info={'status': AuthorizationStatus.accepted})
 
     @on(Action.StopTransaction)
     async def on_stop_transaction(self, meter_stop, timestamp, transaction_id, **kwargs):
         self.active_transaction_id = None
-        if self._on_transaction_start: await self._on_transaction_start(self.id, None)
+        if self._on_transaction_start:
+            await self._on_transaction_start(self.id, None)
         self._stop_timer()
         return call_result.StopTransaction()
 
     @on(Action.MeterValues)
     async def on_meter_values(self, connector_id, meter_value, transaction_id=None, **kwargs):
-        """Handle incoming meter values using Dataclass access (v0.23.0+)"""
         if transaction_id and self.active_transaction_id != transaction_id:
             self.active_transaction_id = transaction_id
-            if self._on_transaction_start: await self._on_transaction_start(self.id, transaction_id)
+            if self._on_transaction_start:
+                await self._on_transaction_start(self.id, transaction_id)
 
         if self._on_meter_values:
             data = {}
             for mv in meter_value:
-                # In v0.23.0, mv is a MeterValue object, and sv is a SampledValue object
-                for sv in getattr(mv, 'sampled_value', []):
-                    measurand = getattr(sv, 'measurand', 'Energy.Active.Import.Register')
-                    phase = getattr(sv, 'phase', None)
-                    val = getattr(sv, 'value', None)
+                # Support for both dict and dataclass access
+                sv_list = getattr(mv, 'sampled_value', []) if not isinstance(mv, dict) else mv.get('sampledValue', [])
+                for sv in sv_list:
+                    measurand = getattr(sv, 'measurand', 'Energy.Active.Import.Register') if not isinstance(sv, dict) else sv.get('measurand')
+                    phase = getattr(sv, 'phase', None) if not isinstance(sv, dict) else sv.get('phase')
+                    val = getattr(sv, 'value', None) if not isinstance(sv, dict) else sv.get('value')
 
                     if val is not None:
                         key = measurand
-                        if phase:
-                            key = f"{measurand}_{phase}"
+                        if phase: key = f"{measurand}_{phase}"
                         data[key] = val
-
             if data:
                 await self._on_meter_values(self.id, data)
-
         return call_result.MeterValues()
 
     # --- Actions ---
 
     async def initialise(self, limit):
-        # Explicitly use Action enum for setting config to avoid casing issues
         opts = {
             'TxBeforeAcceptedEnabled': 'true',
             'AuthorizeRemoteTxRequests': 'false',
@@ -100,17 +104,13 @@ class OptiOcppHandler(cp):
             'UnlockConnectorOnEVSideDisconnect': 'false'
         }
         for k, v in opts.items():
-            try:
-                await self.call(call.ChangeConfiguration(key=k, value=v))
-            except Exception:
-                pass
+            try: await self.call(call.ChangeConfiguration(key=k, value=v))
+            except Exception: pass
         await self.set_profile("TxDefaultProfile", limit, 1, 1)
 
     async def set_profile(self, purpose, amps, conn=1, stack=1):
-        # Map purpose to a fixed ID slot
         id_map = {'ChargePointMaxProfile': 100, 'TxDefaultProfile': 200, 'TxProfile': 300}
         profile_id = id_map.get(purpose, 999)
-
         prof = {
             'chargingProfileId': profile_id,
             'stackLevel': stack,
@@ -118,11 +118,7 @@ class OptiOcppHandler(cp):
             'chargingProfileKind': 'Relative',
             'chargingSchedule': {
                 'chargingRateUnit': 'A',
-                'chargingSchedulePeriod': [{
-                    'startPeriod': 0,
-                    'limit': float(amps),
-                    'numberPhases': self.phase_count
-                }]
+                'chargingSchedulePeriod': [{'startPeriod':0, 'limit':float(amps), 'numberPhases':self.phase_count}]
             }
         }
         if purpose == "TxProfile" and self.active_transaction_id:

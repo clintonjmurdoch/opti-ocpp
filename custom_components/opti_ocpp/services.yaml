@@ -1,0 +1,30 @@
+initialise:
+  description: "Pushes the optimal speed and stability settings to the charger."
+charge:
+  description: "Starts a charging session using the magic PLUG_PLAY_IDTAG."
+stop:
+  description: "Stops the active charging session."
+reset:
+  description: "Performs a soft reboot of the charger's OCPP module."
+limit:
+  description: "Sets a temporary current limit for the active session."
+  fields:
+    limit:
+      description: "Amperage limit (6-32)"
+      example: 10
+      selector:
+        number:
+          min: 6
+          max: 32
+          unit_of_measurement: A
+get_configuration:
+  description: "Dumps the charger's internal settings to the Home Assistant logs."
+set_configuration:
+  description: "Manually changes a specific internal setting on the charger."
+  fields:
+    key:
+      description: "Configuration Key"
+      example: "HeartbeatInterval"
+    value:
+      description: "New Value"
+      example: "60"
