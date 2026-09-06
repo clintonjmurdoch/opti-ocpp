@@ -38,11 +38,9 @@ class OptiCentralSystem:
             await self._server.wait_closed()
 
     async def _on_connect(self, websocket):
-        """Handle new incoming WebSocket connections."""
         path = websocket.request.path.strip('/')
         if path != self.charger_id: return
 
-        # We define callbacks as sync functions that use add_job to enter the loop safely
         handler = OptiOcppHandler(
             id=path,
             connection=websocket,
@@ -53,12 +51,16 @@ class OptiCentralSystem:
         )
         self.instances[path] = handler
 
-        # Trigger initialisation in background
-        self.hass.add_job(handler.initialise, self.entry.data["default_limit"])
+        # 1. Start the OCPP listener task
+        loop_task = asyncio.create_task(handler.start())
+
+        # 2. Safely schedule the initialise task on the HA main loop
+        self.hass.loop.call_soon_threadsafe(
+            lambda: self.hass.async_create_task(handler.initialise(self.entry.data["default_limit"]))
+        )
 
         try:
-            # We await the handler's internal loop
-            await handler.start()
+            await loop_task
         finally:
             self.instances.pop(path, None)
             self._safe_dispatch(path, {"status": "Disconnected"})
@@ -66,26 +68,24 @@ class OptiCentralSystem:
     # --- Sync Callbacks (Bridges from OCPP thread to HA Loop) ---
 
     def _handle_status_update(self, cid, status):
-        """Thread-safe status update bridge."""
-        self.hass.add_job(self._async_update_status, cid, status)
+        """Thread-safe status update."""
+        self.hass.loop.call_soon_threadsafe(
+            lambda: self.hass.async_create_task(self._async_update_status(cid, status))
+        )
 
     async def _async_update_status(self, cid, status):
-        """Internal HA loop logic for status changes."""
         self._safe_dispatch(cid, {"status": status})
         if status == "Charging":
             await self._apply_limit(cid)
 
     def _handle_tid_update(self, cid, tid):
-        """Thread-safe transaction ID bridge."""
-        self.hass.add_job(self._async_save_tid, tid)
-
-    async def _async_save_tid(self, tid):
-        self._cached_tid = tid
-        await self._store.async_save({"active_transaction_id": tid})
+        """Thread-safe TID update."""
+        self.hass.loop.call_soon_threadsafe(
+            lambda: self.hass.async_create_task(self._store.async_save({"active_transaction_id": tid}))
+        )
 
     def _handle_meter_values(self, cid, data):
-        """Thread-safe meter values bridge."""
-        # Convert incoming keys to HA suffixes and dispatch
+        """Thread-safe meter data mapping."""
         mapping = {
             "Energy.Active.Import.Register": "energy",
             "Power.Active.Import": "power",
@@ -107,7 +107,6 @@ class OptiCentralSystem:
             self._safe_dispatch(cid, update_payload)
 
     def _safe_dispatch(self, cid, payload):
-        """The final bridge to the dispatcher."""
         self.hass.loop.call_soon_threadsafe(
             async_dispatcher_send, self.hass, OPTI_DATA_UPDATE.format(cid), payload
         )

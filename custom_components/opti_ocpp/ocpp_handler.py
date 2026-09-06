@@ -36,12 +36,9 @@ class OptiOcppHandler(cp):
         return res.value if hasattr(res, 'value') else res
 
     @on(Action.BootNotification)
-    async def on_boot_notification(self, **kwargs):
-        model = self._get_val(kwargs, 'charge_point_model', 'Unknown')
-        vendor = self._get_val(kwargs, 'charge_point_vendor', 'Unknown')
-        _LOGGER.info(f"Received Boot from {vendor} ({model})")
-
-        if "7" in model and "22" not in model: self.phase_count = 1
+    async def on_boot_notification(self, charge_point_vendor, charge_point_model, **kwargs):
+        _LOGGER.info(f"Received Boot from {charge_point_vendor} ({charge_point_model})")
+        if "7" in charge_point_model and "22" not in charge_point_model: self.phase_count = 1
         return call_result.BootNotificationPayload(
             current_time=datetime.now(timezone.utc).isoformat(),
             interval=30,
@@ -53,50 +50,38 @@ class OptiOcppHandler(cp):
         return call_result.HeartbeatPayload(current_time=datetime.now(timezone.utc).isoformat())
 
     @on(Action.Authorize)
-    async def on_authorize(self, **kwargs):
+    async def on_authorize(self, id_tag, **kwargs):
         return call_result.AuthorizePayload(id_tag_info={'status': AuthorizationStatus.accepted})
 
     @on(Action.StatusNotification)
-    async def on_status_notification(self, **kwargs):
-        # Using kwargs.get to be resilient to positional order shifts in library
-        status = kwargs.get('status')
+    async def on_status_notification(self, connector_id, error_code, status, **kwargs):
         status_str = status.value if hasattr(status, 'value') else status
-
-        if status_str:
-            _LOGGER.info(f"Status changed to: {status_str}")
-            self.status = status_str
-            if self._on_status_change:
-                self._on_status_change(self.id, status_str) # Sync call
-
+        _LOGGER.info(f"[STATUS] {self.id} -> {status_str}")
+        self.status = status_str
+        if self._on_status_change: self._on_status_change(self.id, status_str)
         return call_result.StatusNotificationPayload()
 
     @on(Action.StartTransaction)
-    async def on_start_transaction(self, **kwargs):
+    async def on_start_transaction(self, connector_id, id_tag, meter_start, timestamp, **kwargs):
         tid = 1234
         self.active_transaction_id = tid
-        _LOGGER.info(f"Transaction {tid} started.")
-        if self._on_transaction_start:
-            self._on_transaction_start(self.id, tid) # Sync call
+        _LOGGER.info(f"[TX] Started: {tid}")
+        if self._on_transaction_start: self._on_transaction_start(self.id, tid)
         return call_result.StartTransactionPayload(transaction_id=tid, id_tag_info={'status': AuthorizationStatus.accepted})
 
     @on(Action.StopTransaction)
-    async def on_stop_transaction(self, **kwargs):
-        tid = self._get_val(kwargs, 'transaction_id', 1234)
-        _LOGGER.info(f"Transaction {tid} stopped.")
+    async def on_stop_transaction(self, meter_stop, timestamp, transaction_id, **kwargs):
+        _LOGGER.info(f"[TX] Stopped: {transaction_id}")
         self.active_transaction_id = None
-        if self._on_transaction_start:
-            self._on_transaction_start(self.id, None) # Sync call
+        if self._on_transaction_start: self._on_transaction_start(self.id, None)
         return call_result.StopTransactionPayload()
 
     @on(Action.MeterValues)
-    async def on_meter_values(self, **kwargs):
+    async def on_meter_values(self, connector_id, meter_value, transaction_id=None, **kwargs):
         try:
-            meter_value = kwargs.get('meter_value', [])
-            tid = kwargs.get('transaction_id')
-
-            if tid and self.active_transaction_id != tid:
-                self.active_transaction_id = tid
-                if self._on_transaction_start: self._on_transaction_start(self.id, tid)
+            if transaction_id and self.active_transaction_id != transaction_id:
+                self.active_transaction_id = transaction_id
+                if self._on_transaction_start: self._on_transaction_start(self.id, transaction_id)
 
             if self._on_meter_values:
                 data = {}
@@ -109,13 +94,21 @@ class OptiOcppHandler(cp):
                         if val is not None:
                             key = f"{meas}_{phase}" if phase else meas
                             data[key] = val
-                if data: self._on_meter_values(self.id, data) # Sync call
+
+                if data:
+                    _LOGGER.info(f"[METER] Parsed Keys: {list(data.keys())}")
+                    self._on_meter_values(self.id, data)
         except Exception as e:
             _LOGGER.error(f"MeterValues parsing error: {e}")
         return call_result.MeterValuesPayload()
 
     async def initialise(self, limit):
-        opts = {'TxBeforeAcceptedEnabled': 'true', 'AuthorizeRemoteTxRequests': 'false', 'StopTransactionOnInvalidId': 'false', 'UnlockConnectorOnEVSideDisconnect': 'false'}
+        opts = {
+            'TxBeforeAcceptedEnabled': 'true',
+            'AuthorizeRemoteTxRequests': 'false',
+            'StopTransactionOnInvalidId': 'false',
+            'UnlockConnectorOnEVSideDisconnect': 'false'
+        }
         for k, v in opts.items():
             try: await self.call(call.ChangeConfigurationPayload(key=k, value=v))
             except Exception: pass
@@ -124,6 +117,15 @@ class OptiOcppHandler(cp):
             await self.call(call.TriggerMessagePayload(requested_message='StatusNotification', connector_id=1))
             await self.call(call.TriggerMessagePayload(requested_message='MeterValues', connector_id=1))
         except Exception: pass
+
+    async def clear_profiles(self):
+        """Wipes all stored profiles from charger memory."""
+        try:
+            res = await self.call(call.ClearChargingProfilePayload())
+            _LOGGER.info(f"Clear Profiles result: {res.status}")
+            return res
+        except Exception as e:
+            _LOGGER.error(f"Failed to clear profiles: {e}")
 
     async def set_profile(self, purpose, amps, conn=1, stack=20):
         id_map = {'ChargePointMaxProfile': 100, 'TxDefaultProfile': 200, 'TxProfile': 300}
