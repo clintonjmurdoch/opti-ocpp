@@ -9,7 +9,7 @@ from ocpp.v16.enums import Action, RegistrationStatus, AuthorizationStatus, Rese
 
 _LOGGER = logging.getLogger(__name__)
 
-# --- Library Casing Fix ---
+# --- Library Case Normalization ---
 if not hasattr(Action, 'meter_values'): Action.meter_values = Action.MeterValues
 if not hasattr(Action, 'status_notification'): Action.status_notification = Action.StatusNotification
 if not hasattr(Action, 'boot_notification'): Action.boot_notification = Action.BootNotification
@@ -30,15 +30,22 @@ class OptiOcppHandler(cp):
         self._on_transaction_start = on_transaction_start
         self._on_meter_values = on_meter_values
 
-    def _safe_str(self, val):
-        """Extracts the string value from an Enum or object."""
-        return val.value if hasattr(val, 'value') else str(val) if val is not None else None
+    def _to_dict(self, obj):
+        """Recursively converts Dataclasses/Enums to a plain dictionary."""
+        if hasattr(obj, '__dataclass_fields__'):
+            return {k: self._to_dict(v) for k, v in obj.__dict__.items() if v is not None}
+        elif isinstance(obj, list):
+            return [self._to_dict(v) for v in obj]
+        elif hasattr(obj, 'value'): # Handle Enums
+            return obj.value
+        return obj
 
     @on(Action.BootNotification)
-    async def on_boot_notification(self, charge_point_vendor, charge_point_model, **kwargs):
-        model_str = self._safe_str(charge_point_model)
-        _LOGGER.info(f"Received Boot from {charge_point_vendor} ({model_str})")
-        if "7" in model_str and "22" not in model_str: self.phase_count = 1
+    async def on_boot_notification(self, **kwargs):
+        payload = self._to_dict(kwargs)
+        model = payload.get('charge_point_model', '')
+        _LOGGER.info(f"Charger {self.id} ({model}) connected.")
+        if "7" in str(model) and "22" not in str(model): self.phase_count = 1
         return call_result.BootNotificationPayload(current_time=datetime.now(timezone.utc).isoformat(), interval=30, status=RegistrationStatus.accepted)
 
     @on(Action.Heartbeat)
@@ -46,13 +53,13 @@ class OptiOcppHandler(cp):
         return call_result.HeartbeatPayload(current_time=datetime.now(timezone.utc).isoformat())
 
     @on(Action.Authorize)
-    async def on_authorize(self, id_tag, **kwargs):
+    async def on_authorize(self, **kwargs):
         return call_result.AuthorizePayload(id_tag_info={'status': AuthorizationStatus.accepted})
 
     @on(Action.StatusNotification)
     async def on_status_notification(self, connector_id, error_code, status, **kwargs):
-        status_str = self._safe_str(status)
-        _LOGGER.info(f"[STATUS] {self.id} -> {status_str}")
+        status_str = status.value if hasattr(status, 'value') else str(status)
+        _LOGGER.info(f"[STATUS] {self.id}: {status_str}")
         self.status = status_str
         if self._on_status_change: self._on_status_change(self.id, status_str)
         return call_result.StatusNotificationPayload()
@@ -61,46 +68,41 @@ class OptiOcppHandler(cp):
     async def on_start_transaction(self, connector_id, id_tag, meter_start, timestamp, **kwargs):
         tid = 1234
         self.active_transaction_id = tid
-        _LOGGER.info(f"[TX] Started: {tid}")
         if self._on_transaction_start: self._on_transaction_start(self.id, tid)
         return call_result.StartTransactionPayload(transaction_id=tid, id_tag_info={'status': AuthorizationStatus.accepted})
 
     @on(Action.StopTransaction)
     async def on_stop_transaction(self, meter_stop, timestamp, transaction_id, **kwargs):
-        _LOGGER.info(f"[TX] Stopped: {transaction_id}")
         self.active_transaction_id = None
         if self._on_transaction_start: self._on_transaction_start(self.id, None)
         return call_result.StopTransactionPayload()
 
     @on(Action.MeterValues)
-    async def on_meter_values(self, connector_id, transaction_id, meter_value, **kwargs):
-        """Corrected order: Connector -> Transaction -> Data List."""
+    async def on_meter_values(self, connector_id, meter_value, transaction_id=None, **kwargs):
+        """Corrected: transaction_id is now optional with a default value."""
         try:
-            _LOGGER.info(f"METER HANDLER: Received payload for Conn {connector_id}")
-            if transaction_id and self.active_transaction_id != transaction_id:
-                self.active_transaction_id = transaction_id
-                if self._on_transaction_start: self._on_transaction_start(self.id, transaction_id)
+            # Step 1: Force everything into a clean dictionary
+            payload = self._to_dict({'connector_id': connector_id, 'transaction_id': transaction_id, 'meter_value': meter_value})
+            mv_list = payload.get('meter_value', [])
 
-            if self._on_meter_values:
-                data = {}
-                for mv in meter_value:
-                    # 'mv' is a MeterValue object with a 'sampled_value' list
-                    sv_list = getattr(mv, 'sampled_value', [])
-                    for sv in sv_list:
-                        # Extract fields using our Enum-safe helper
-                        meas = self._safe_str(getattr(sv, 'measurand', 'Energy.Active.Import.Register'))
-                        phase = self._safe_str(getattr(sv, 'phase', None))
-                        val = self._safe_str(getattr(sv, 'value', None))
+            data = {}
+            for mv in mv_list:
+                # Step 2: Use simple keys to extract measurements
+                for sv in mv.get('sampled_value', []):
+                    meas = sv.get('measurand', 'Energy.Active.Import.Register')
+                    phase = sv.get('phase')
+                    val = sv.get('value')
 
-                        if val:
-                            key = f"{meas}_{phase}" if phase else meas
-                            data[key] = val
+                    if val is not None:
+                        key = f"{meas}_{phase}" if phase else meas
+                        data[key] = val
 
-                if data:
-                    _LOGGER.info(f"[METER] Parsed {len(data)} metrics.")
-                    self._on_meter_values(self.id, data)
+            if data and self._on_meter_values:
+                _LOGGER.info(f"[METER] Parsed {len(data)} metrics for {self.id}")
+                self._on_meter_values(self.id, data)
+
         except Exception as e:
-            _LOGGER.error(f"MeterValues parser crashed: {e}")
+            _LOGGER.error(f"MeterValues parsing crash: {e}")
         return call_result.MeterValuesPayload()
 
     async def initialise(self, limit):
@@ -115,7 +117,11 @@ class OptiOcppHandler(cp):
         except Exception: pass
 
     async def clear_profiles(self):
-        return await self.call(call.ClearChargingProfilePayload())
+        try:
+            res = await self.call(call.ClearChargingProfilePayload())
+            _LOGGER.info(f"Clear Profiles result: {res.status}")
+            return res
+        except Exception: pass
 
     async def set_profile(self, purpose, amps, conn=1, stack=20):
         id_map = {'ChargePointMaxProfile': 100, 'TxDefaultProfile': 200, 'TxProfile': 300}

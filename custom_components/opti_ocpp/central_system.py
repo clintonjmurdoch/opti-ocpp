@@ -52,23 +52,15 @@ class OptiCentralSystem:
         self.instances[path] = handler
 
         loop_task = asyncio.create_task(handler.start())
-
-        # Bridge to main loop for async initialization
-        self.hass.loop.call_soon_threadsafe(
-            lambda: self.hass.async_create_task(handler.initialise(self.entry.data["default_limit"]))
-        )
+        self.hass.add_job(handler.initialise, self.entry.data["default_limit"])
 
         try: await loop_task
         finally:
             self.instances.pop(path, None)
             self._safe_dispatch(path, {"status": "Disconnected"})
 
-    # --- Sync Callbacks (Bridges from OCPP thread to HA Loop) ---
-
     def _handle_status_update(self, cid, status):
-        self.hass.loop.call_soon_threadsafe(
-            lambda: self.hass.async_create_task(self._async_update_status(cid, status))
-        )
+        self.hass.add_job(self._async_update_status, cid, status)
 
     async def _async_update_status(self, cid, status):
         self._safe_dispatch(cid, {"status": status})
@@ -76,19 +68,15 @@ class OptiCentralSystem:
             await self._apply_limit(cid)
 
     def _handle_tid_update(self, cid, tid):
-        self.hass.loop.call_soon_threadsafe(
-            lambda: self.hass.async_create_task(self._async_save_tid(tid))
-        )
+        self.hass.add_job(self._async_save_tid, tid)
 
     async def _async_save_tid(self, tid):
         self._cached_tid = tid
         await self._store.async_save({"active_transaction_id": tid})
 
     def _handle_meter_values(self, cid, data):
-        """Thread-safe meter values bridge."""
-        self.hass.loop.call_soon_threadsafe(
-            lambda: self.hass.async_create_task(self._async_update_meter(cid, data))
-        )
+        """Thread-safe meter data callback."""
+        self.hass.add_job(self._async_update_meter, cid, data)
 
     async def _async_update_meter(self, cid, data):
         mapping = {
