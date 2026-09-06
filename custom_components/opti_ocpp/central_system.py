@@ -52,7 +52,7 @@ class OptiCentralSystem:
             _LOGGER.warning(f"Connection rejected: Path '/{path}' does not match configured ID '/{self.charger_id}'")
             return
 
-        _LOGGER.info(f"Charger '{path}' verified. Starting OCPP handshake...")
+        _LOGGER.info(f"Charger '{path}' verified. Starting OCPP handler...")
 
         handler = OptiOcppHandler(
             id=path,
@@ -65,17 +65,30 @@ class OptiCentralSystem:
 
         self.instances[path] = handler
 
-        # Initialise with optimal settings immediately
-        await handler.initialise(self.entry.data["default_limit"])
+        # FIX: Start the message listener FIRST to avoid deadlocking initialise()
+        # The listener processes the responses that initialise() waits for.
+        loop_task = asyncio.create_task(handler.start())
+
+        # Push initial settings in a non-blocking task
+        asyncio.create_task(self._safe_initialise(handler))
 
         try:
-            await handler.start()
+            await loop_task
         except Exception as e:
-            _LOGGER.error(f"Error in OCPP session for {path}: {e}")
+            _LOGGER.error(f"OCPP connection loop for {path} failed: {e}")
         finally:
-            _LOGGER.info(f"Charger {path} disconnected.")
+            _LOGGER.info(f"Charger {path} session ended.")
             self.instances.pop(path, None)
             async_dispatcher_send(self.hass, OPTI_DATA_UPDATE.format(path), {"status": "Disconnected"})
+
+    async def _safe_initialise(self, handler):
+        """Wraps the blocking initialise call with logging."""
+        _LOGGER.info(f"Triggering auto-initialisation for {handler.id}...")
+        try:
+            await handler.initialise(self.entry.data["default_limit"])
+            _LOGGER.info(f"Auto-initialisation sequence complete for {handler.id}.")
+        except Exception as e:
+            _LOGGER.error(f"Initialisation failed for {handler.id}: {e}")
 
     async def _update_status(self, cid, status):
         _LOGGER.info(f"Charger {cid} reported status: {status}")
@@ -89,7 +102,6 @@ class OptiCentralSystem:
         _LOGGER.debug(f"Transaction ID updated for {cid}: {tid}")
 
     async def _handle_meter_values(self, cid, data):
-        """Bridges raw measurements to dispatcher."""
         mapping = {
             "Energy.Active.Import.Register": "energy",
             "Power.Active.Import": "power",
@@ -115,7 +127,7 @@ class OptiCentralSystem:
         state = self.hass.states.get(f"number.opti_{cid}_limit")
         if state and cid in self.instances:
             limit = float(state.state)
-            _LOGGER.info(f"Pushing active limit: {limit}A")
+            _LOGGER.info(f"Pushing current UI limit: {limit}A")
             await self.instances[cid].set_profile("TxProfile", limit, conn=1, stack=2)
 
     def get_instance(self, cid): return self.instances.get(cid)

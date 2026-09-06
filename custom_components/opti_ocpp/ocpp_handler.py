@@ -22,6 +22,7 @@ class OptiOcppHandler(cp):
 
     @on(Action.BootNotification)
     async def on_boot_notification(self, charge_point_vendor, charge_point_model, **kwargs):
+        _LOGGER.info(f"Received Boot from {charge_point_vendor} ({charge_point_model})")
         if "7" in charge_point_model and "22" not in charge_point_model:
             self.phase_count = 1
         else:
@@ -56,12 +57,14 @@ class OptiOcppHandler(cp):
     async def on_start_transaction(self, connector_id, id_tag, meter_start, timestamp, **kwargs):
         tid = 1234
         self.active_transaction_id = tid
+        _LOGGER.info(f"Transaction {tid} started.")
         if self._on_transaction_start:
             await self._on_transaction_start(self.id, tid)
         return call_result.StartTransactionPayload(transaction_id=tid, id_tag_info={'status': AuthorizationStatus.accepted})
 
     @on(Action.StopTransaction)
     async def on_stop_transaction(self, meter_stop, timestamp, transaction_id, **kwargs):
+        _LOGGER.info(f"Transaction {transaction_id} stopped.")
         self.active_transaction_id = None
         if self._on_transaction_start:
             await self._on_transaction_start(self.id, None)
@@ -103,9 +106,10 @@ class OptiOcppHandler(cp):
         }
         for k, v in opts.items():
             try:
-                await self.call(call.ChangeConfigurationPayload(key=k, value=v))
-            except Exception:
-                pass
+                res = await self.call(call.ChangeConfigurationPayload(key=k, value=v))
+                _LOGGER.info(f"Configuration change {k} to {v}: {res.status}")
+            except Exception as e:
+                _LOGGER.error(f"Failed to set {k}: {e}")
         await self.set_profile("TxDefaultProfile", limit, 1, 1)
 
     async def set_profile(self, purpose, amps, conn=1, stack=1):
@@ -123,19 +127,31 @@ class OptiOcppHandler(cp):
         }
         if purpose == "TxProfile" and self.active_transaction_id:
             prof['transactionId'] = self.active_transaction_id
-        return await self.call(call.SetChargingProfilePayload(connector_id=conn, cs_charging_profiles=prof))
+
+        try:
+            res = await self.call(call.SetChargingProfilePayload(connector_id=conn, cs_charging_profiles=prof))
+            _LOGGER.info(f"Profile {purpose} ({amps}A) result: {res.status}")
+        except Exception as e:
+            _LOGGER.error(f"Failed to set profile {purpose}: {e}")
 
     async def start_charge(self):
-        return await self.call(call.RemoteStartTransactionPayload(id_tag='PLUG_PLAY_IDTAG', connector_id=1))
+        res = await self.call(call.RemoteStartTransactionPayload(id_tag='PLUG_PLAY_IDTAG', connector_id=1))
+        _LOGGER.info(f"RemoteStart result: {res.status}")
+        return res
 
     async def stop_charge(self):
-        return await self.call(call.RemoteStopTransactionPayload(transaction_id=self.active_transaction_id or 1234))
+        tid = self.active_transaction_id or 1234
+        res = await self.call(call.RemoteStopTransactionPayload(transaction_id=tid))
+        _LOGGER.info(f"RemoteStop result for TID {tid}: {res.status}")
+        return res
 
     def _start_timer(self):
         self._stop_timer()
         async def kill():
             await asyncio.sleep(30)
-            if self.status == "SuspendedEV": await self.stop_charge()
+            if self.status == "SuspendedEV":
+                _LOGGER.warning("SuspendedEV timeout reached. Killing transaction.")
+                await self.stop_charge()
         self._suspended_timer = asyncio.create_task(kill())
 
     def _stop_timer(self):
