@@ -9,7 +9,7 @@ from ocpp.v16.enums import Action, RegistrationStatus, AuthorizationStatus, Rese
 
 _LOGGER = logging.getLogger(__name__)
 
-# --- Library Casing Fix ---
+# --- Library Case Normalization ---
 if not hasattr(Action, 'meter_values'): Action.meter_values = Action.MeterValues
 if not hasattr(Action, 'status_notification'): Action.status_notification = Action.StatusNotification
 if not hasattr(Action, 'boot_notification'): Action.boot_notification = Action.BootNotification
@@ -31,56 +31,72 @@ class OptiOcppHandler(cp):
         self._on_meter_values = on_meter_values
 
     def _get_val(self, obj, attr, default=None):
-        """Helper to get string value from either dict or dataclass/enum."""
+        """Robustly extract string values from dataclasses/enums/dicts."""
         res = getattr(obj, attr, default) if not isinstance(obj, dict) else obj.get(attr, default)
-        # If the result is an Enum member, get its .value (the string)
-        if hasattr(res, 'value'):
-            return res.value
-        return res
+        return res.value if hasattr(res, 'value') else res
 
     @on(Action.BootNotification)
-    async def on_boot_notification(self, charge_point_vendor, charge_point_model, **kwargs):
-        if "7" in charge_point_model and "22" not in charge_point_model: self.phase_count = 1
-        return call_result.BootNotificationPayload(current_time=datetime.now(timezone.utc).isoformat(), interval=30, status=RegistrationStatus.accepted)
+    async def on_boot_notification(self, **kwargs):
+        model = self._get_val(kwargs, 'charge_point_model', 'Unknown')
+        vendor = self._get_val(kwargs, 'charge_point_vendor', 'Unknown')
+        _LOGGER.info(f"Received Boot from {vendor} ({model})")
+
+        if "7" in model and "22" not in model: self.phase_count = 1
+        return call_result.BootNotificationPayload(
+            current_time=datetime.now(timezone.utc).isoformat(),
+            interval=30,
+            status=RegistrationStatus.accepted
+        )
 
     @on(Action.Heartbeat)
     async def on_heartbeat(self, **kwargs):
         return call_result.HeartbeatPayload(current_time=datetime.now(timezone.utc).isoformat())
 
     @on(Action.Authorize)
-    async def on_authorize(self, id_tag, **kwargs):
+    async def on_authorize(self, **kwargs):
         return call_result.AuthorizePayload(id_tag_info={'status': AuthorizationStatus.accepted})
 
     @on(Action.StatusNotification)
-    async def on_status_notification(self, connector_id, error_code, status, **kwargs):
-        # status is an Enum member in v0.23.0
+    async def on_status_notification(self, **kwargs):
+        # Using kwargs.get to be resilient to positional order shifts in library
+        status = kwargs.get('status')
         status_str = status.value if hasattr(status, 'value') else status
-        self.status = status_str
-        if self._on_status_change:
-            await self._on_status_change(self.id, status_str)
+
+        if status_str:
+            _LOGGER.info(f"Status changed to: {status_str}")
+            self.status = status_str
+            if self._on_status_change:
+                self._on_status_change(self.id, status_str) # Sync call
+
         return call_result.StatusNotificationPayload()
 
     @on(Action.StartTransaction)
-    async def on_start_transaction(self, connector_id, id_tag, meter_start, timestamp, **kwargs):
+    async def on_start_transaction(self, **kwargs):
         tid = 1234
         self.active_transaction_id = tid
+        _LOGGER.info(f"Transaction {tid} started.")
         if self._on_transaction_start:
-            await self._on_transaction_start(self.id, tid)
+            self._on_transaction_start(self.id, tid) # Sync call
         return call_result.StartTransactionPayload(transaction_id=tid, id_tag_info={'status': AuthorizationStatus.accepted})
 
     @on(Action.StopTransaction)
-    async def on_stop_transaction(self, meter_stop, timestamp, transaction_id, **kwargs):
+    async def on_stop_transaction(self, **kwargs):
+        tid = self._get_val(kwargs, 'transaction_id', 1234)
+        _LOGGER.info(f"Transaction {tid} stopped.")
         self.active_transaction_id = None
         if self._on_transaction_start:
-            await self._on_transaction_start(self.id, None)
+            self._on_transaction_start(self.id, None) # Sync call
         return call_result.StopTransactionPayload()
 
     @on(Action.MeterValues)
-    async def on_meter_values(self, connector_id, meter_value, transaction_id=None, **kwargs):
+    async def on_meter_values(self, **kwargs):
         try:
-            if transaction_id and self.active_transaction_id != transaction_id:
-                self.active_transaction_id = transaction_id
-                if self._on_transaction_start: await self._on_transaction_start(self.id, transaction_id)
+            meter_value = kwargs.get('meter_value', [])
+            tid = kwargs.get('transaction_id')
+
+            if tid and self.active_transaction_id != tid:
+                self.active_transaction_id = tid
+                if self._on_transaction_start: self._on_transaction_start(self.id, tid)
 
             if self._on_meter_values:
                 data = {}
@@ -93,7 +109,7 @@ class OptiOcppHandler(cp):
                         if val is not None:
                             key = f"{meas}_{phase}" if phase else meas
                             data[key] = val
-                if data: await self._on_meter_values(self.id, data)
+                if data: self._on_meter_values(self.id, data) # Sync call
         except Exception as e:
             _LOGGER.error(f"MeterValues parsing error: {e}")
         return call_result.MeterValuesPayload()

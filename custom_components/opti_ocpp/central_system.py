@@ -1,7 +1,6 @@
 import asyncio
 import logging
 import websockets
-from homeassistant.core import callback
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from .ocpp_handler import OptiOcppHandler
@@ -39,44 +38,54 @@ class OptiCentralSystem:
             await self._server.wait_closed()
 
     async def _on_connect(self, websocket):
+        """Handle new incoming WebSocket connections."""
         path = websocket.request.path.strip('/')
         if path != self.charger_id: return
 
+        # We define callbacks as sync functions that use add_job to enter the loop safely
         handler = OptiOcppHandler(
             id=path,
             connection=websocket,
-            on_status_change=self._update_status,
+            on_status_change=self._handle_status_update,
             on_transaction_start=self._handle_tid_update,
             on_meter_values=self._handle_meter_values,
             initial_tid=self._cached_tid
         )
         self.instances[path] = handler
 
-        loop_task = asyncio.create_task(handler.start())
-        self.hass.add_job(self._safe_initialise, handler)
+        # Trigger initialisation in background
+        self.hass.add_job(handler.initialise, self.entry.data["default_limit"])
 
-        try: await loop_task
+        try:
+            # We await the handler's internal loop
+            await handler.start()
         finally:
             self.instances.pop(path, None)
             self._safe_dispatch(path, {"status": "Disconnected"})
 
-    def _safe_initialise(self, handler):
-        self.hass.async_create_task(handler.initialise(self.entry.data["default_limit"]))
+    # --- Sync Callbacks (Bridges from OCPP thread to HA Loop) ---
 
-    async def _update_status(self, cid, status):
+    def _handle_status_update(self, cid, status):
+        """Thread-safe status update bridge."""
+        self.hass.add_job(self._async_update_status, cid, status)
+
+    async def _async_update_status(self, cid, status):
+        """Internal HA loop logic for status changes."""
         self._safe_dispatch(cid, {"status": status})
         if status == "Charging":
-            self.hass.async_create_task(self._apply_limit(cid))
+            await self._apply_limit(cid)
 
-    async def _handle_tid_update(self, cid, tid):
+    def _handle_tid_update(self, cid, tid):
+        """Thread-safe transaction ID bridge."""
+        self.hass.add_job(self._async_save_tid, tid)
+
+    async def _async_save_tid(self, tid):
         self._cached_tid = tid
-        self.hass.async_create_task(self._store.async_save({"active_transaction_id": tid}))
+        await self._store.async_save({"active_transaction_id": tid})
 
-    async def _handle_meter_values(self, cid, data):
-        """Async callback for meter data processing."""
-        # DEBUG: Print the raw keys being generated
-        _LOGGER.debug(f"Meter data received for {cid}: {list(data.keys())}")
-
+    def _handle_meter_values(self, cid, data):
+        """Thread-safe meter values bridge."""
+        # Convert incoming keys to HA suffixes and dispatch
         mapping = {
             "Energy.Active.Import.Register": "energy",
             "Power.Active.Import": "power",
@@ -98,6 +107,7 @@ class OptiCentralSystem:
             self._safe_dispatch(cid, update_payload)
 
     def _safe_dispatch(self, cid, payload):
+        """The final bridge to the dispatcher."""
         self.hass.loop.call_soon_threadsafe(
             async_dispatcher_send, self.hass, OPTI_DATA_UPDATE.format(cid), payload
         )
