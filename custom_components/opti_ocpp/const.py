@@ -5,5 +5,6 @@ CONF_PORT = "port"
 DEFAULT_PORT = 9000
 DEFAULT_LIMIT = 6
 
-# Signal for dispatcher
+# Signals
 OPTI_DATA_UPDATE = "opti_ocpp_update_{}"
+OPTI_RESET_LIMIT = "opti_ocpp_reset_limit_{}"

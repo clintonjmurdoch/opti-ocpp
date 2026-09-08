@@ -4,7 +4,7 @@ import websockets
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from .ocpp_handler import OptiOcppHandler
-from .const import DOMAIN, OPTI_DATA_UPDATE
+from .const import DOMAIN, OPTI_DATA_UPDATE, OPTI_RESET_LIMIT
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -52,7 +52,9 @@ class OptiCentralSystem:
         self.instances[path] = handler
 
         loop_task = asyncio.create_task(handler.start())
-        self.hass.add_job(handler.initialise, self.entry.data["default_limit"])
+        self.hass.loop.call_soon_threadsafe(
+            lambda: self.hass.async_create_task(handler.initialise(self.entry.data["default_limit"]))
+        )
 
         try: await loop_task
         finally:
@@ -60,25 +62,39 @@ class OptiCentralSystem:
             self._safe_dispatch(path, {"status": "Disconnected"})
 
     def _handle_status_update(self, cid, status):
-        self.hass.add_job(self._async_update_status, cid, status)
+        self.hass.loop.call_soon_threadsafe(
+            lambda: self.hass.async_create_task(self._async_update_status(cid, status))
+        )
 
     async def _async_update_status(self, cid, status):
         self._safe_dispatch(cid, {"status": status})
+
         if status == "Charging":
             await self._apply_limit(cid)
 
-    def _handle_tid_update(self, cid, tid):
-        self.hass.add_job(self._async_save_tid, tid)
+        # Improvement: Reset limit ONLY when the session is definitely over.
+        # We ignore SuspendedEV/SuspendedEVSE as the user might want to keep their limit.
+        if status in ["Available", "Preparing", "Finishing"]:
+            _LOGGER.info(f"Session ended for {cid} (Status: {status}). Resetting slider.")
+            self.hass.loop.call_soon_threadsafe(
+                async_dispatcher_send, self.hass, OPTI_RESET_LIMIT.format(cid)
+            )
 
-    async def _async_save_tid(self, tid):
+    def _handle_tid_update(self, cid, tid):
+        self.hass.loop.call_soon_threadsafe(
+            lambda: self.hass.async_create_task(self._async_save_tid(cid, tid))
+        )
+
+    async def _async_save_tid(self, cid, tid):
         self._cached_tid = tid
         await self._store.async_save({"active_transaction_id": tid})
 
     def _handle_meter_values(self, cid, data):
-        """Thread-safe meter data callback."""
-        self.hass.add_job(self._async_update_meter, cid, data)
+        self.hass.loop.call_soon_threadsafe(
+            lambda: self.hass.async_create_task(self._async_update_meter_data(cid, data))
+        )
 
-    async def _async_update_meter(self, cid, data):
+    async def _async_update_meter_data(self, cid, data):
         mapping = {
             "Energy.Active.Import.Register": "energy",
             "Power.Active.Import": "power",
