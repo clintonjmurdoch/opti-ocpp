@@ -1,6 +1,6 @@
 # SEVR Opti OCPP Home Assistant Integration
 
-A high-performance, specialized Home Assistant integration for **SEVR Opti** EV chargers. This integration provides a robust implementation of the OCPP 1.6J protocol, specifically tuned for maximum stability and responsiveness.
+A specialized Home Assistant integration for **SEVR Opti** EV chargers. This integration provides a robust implementation of the OCPP 1.6J protocol, specifically tuned for maximum stability and responsiveness.
 
 ## Why this integration?
 
@@ -9,10 +9,10 @@ Generic OCPP implementations often struggle with specific charger hardware quirk
 ## Key Features
 
 ### 1. Auto-Stabilization on Connection
-Every time the charger connects to the Home Assistant WebSocket server, the integration automatically enforces the following "Golden Configuration" to ensure a reliable handshake:
+Every time the charger connects to the Home Assistant WebSocket server, the integration automatically enforces the following configuration options to ensure a reliable handshake:
 
-- **`TxBeforeAcceptedEnabled`**: Set to `true`. This enables "Speed Mode," allowing power to flow immediately after physical relay engagement.
-- **`AuthorizeRemoteTxRequests`**: Set to `false`. Bypasses unnecessary remote authorization steps for faster session starts.
+- **`TxBeforeAcceptedEnabled`**: Set to `true`.
+- **`AuthorizeRemoteTxRequests`**: Set to `false`.
 - **`UnlockConnectorOnEVSideDisconnect`**: Set to `false`.
 
 Additionally, the integration proactively requests a **Status Notification** and **Meter Values** immediately upon connection to ensure Home Assistant reflects the charger's true state after a restart.
