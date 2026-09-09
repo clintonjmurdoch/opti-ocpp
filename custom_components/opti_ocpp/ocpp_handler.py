@@ -106,7 +106,11 @@ class OptiOcppHandler(cp):
         return call_result.MeterValuesPayload()
 
     async def initialise(self, limit):
-        opts = {'TxBeforeAcceptedEnabled': 'true', 'AuthorizeRemoteTxRequests': 'false', 'StopTransactionOnInvalidId': 'false', 'UnlockConnectorOnEVSideDisconnect': 'false'}
+        opts = {
+            'TxBeforeAcceptedEnabled': 'true',
+            'AuthorizeRemoteTxRequests': 'false',
+            'UnlockConnectorOnEVSideDisconnect': 'false'
+        }
         for k, v in opts.items():
             try: await self.call(call.ChangeConfigurationPayload(key=k, value=v))
             except Exception: pass
