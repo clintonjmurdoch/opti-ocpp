@@ -52,6 +52,8 @@ class OptiCentralSystem:
         self.instances[path] = handler
 
         loop_task = asyncio.create_task(handler.start())
+
+        # Bridge to main loop for async initialization (Working pattern from yesterday)
         self.hass.loop.call_soon_threadsafe(
             lambda: self.hass.async_create_task(handler.initialise(self.entry.data["default_limit"]))
         )
@@ -60,6 +62,8 @@ class OptiCentralSystem:
         finally:
             self.instances.pop(path, None)
             self._safe_dispatch(path, {"status": "Disconnected"})
+
+    # --- Sync Callbacks (Bridges from OCPP thread to HA Loop) ---
 
     def _handle_status_update(self, cid, status):
         self.hass.loop.call_soon_threadsafe(
@@ -72,20 +76,18 @@ class OptiCentralSystem:
         if status == "Charging":
             await self._apply_limit(cid)
 
-        # Improvement: Reset limit ONLY when the session is definitely over.
-        # We ignore SuspendedEV/SuspendedEVSE as the user might want to keep their limit.
+        # Auto-Reset Logic (Added as requested)
         if status in ["Available", "Preparing", "Finishing"]:
-            _LOGGER.info(f"Session ended for {cid} (Status: {status}). Resetting slider.")
             self.hass.loop.call_soon_threadsafe(
                 async_dispatcher_send, self.hass, OPTI_RESET_LIMIT.format(cid)
             )
 
     def _handle_tid_update(self, cid, tid):
         self.hass.loop.call_soon_threadsafe(
-            lambda: self.hass.async_create_task(self._async_save_tid(cid, tid))
+            lambda: self.hass.async_create_task(self._async_save_tid(tid))
         )
 
-    async def _async_save_tid(self, cid, tid):
+    async def _async_save_tid(self, tid):
         self._cached_tid = tid
         await self._store.async_save({"active_transaction_id": tid})
 
@@ -95,6 +97,7 @@ class OptiCentralSystem:
         )
 
     async def _async_update_meter_data(self, cid, data):
+        # Mapping Expansion (Added as requested)
         mapping = {
             "Energy.Active.Import.Register": "energy",
             "Power.Active.Import": "power",
@@ -106,7 +109,12 @@ class OptiCentralSystem:
             "Current.Import_L3-N": "current_l3",
             "Voltage_L1-N": "voltage_l1",
             "Voltage_L2-N": "voltage_l2",
-            "Voltage_L3-N": "voltage_l3"
+            "Voltage_L3-N": "voltage_l3",
+            "Current.Offered": "current_offered",
+            "Power.Reactive.Import": "power_reactive",
+            "Power.Factor": "power_factor",
+            "Frequency": "frequency",
+            "Temperature": "temperature"
         }
         update_payload = {}
         for ocpp_key, ha_suffix in mapping.items():

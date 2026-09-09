@@ -1,7 +1,7 @@
 import logging
 from homeassistant.core import callback
 from homeassistant.components.sensor import SensorEntity, SensorDeviceClass, SensorStateClass
-from homeassistant.const import UnitOfEnergy, UnitOfPower, UnitOfElectricCurrent, UnitOfElectricPotential
+from homeassistant.const import UnitOfEnergy, UnitOfPower, UnitOfElectricCurrent, UnitOfElectricPotential, UnitOfFrequency, UnitOfTemperature
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from .const import DOMAIN, OPTI_DATA_UPDATE
 
@@ -22,6 +22,11 @@ async def async_setup_entry(hass, entry, async_add_entities):
         OptiGenericSensor(cid, "Voltage L1", "voltage_l1", "mdi:sine-wave", UnitOfElectricPotential.VOLT, SensorDeviceClass.VOLTAGE, SensorStateClass.MEASUREMENT),
         OptiGenericSensor(cid, "Voltage L2", "voltage_l2", "mdi:sine-wave", UnitOfElectricPotential.VOLT, SensorDeviceClass.VOLTAGE, SensorStateClass.MEASUREMENT),
         OptiGenericSensor(cid, "Voltage L3", "voltage_l3", "mdi:sine-wave", UnitOfElectricPotential.VOLT, SensorDeviceClass.VOLTAGE, SensorStateClass.MEASUREMENT),
+        OptiGenericSensor(cid, "Current Offered", "current_offered", "mdi:current-ac", UnitOfElectricCurrent.AMPERE, SensorDeviceClass.CURRENT, SensorStateClass.MEASUREMENT),
+        OptiGenericSensor(cid, "Power Reactive", "power_reactive", "mdi:flash-outline", "var", None, SensorStateClass.MEASUREMENT),
+        OptiGenericSensor(cid, "Power Factor", "power_factor", "mdi:angle-acute", None, None, SensorStateClass.MEASUREMENT),
+        OptiGenericSensor(cid, "Frequency", "frequency", "mdi:sine-wave", UnitOfFrequency.HERTZ, SensorDeviceClass.FREQUENCY, SensorStateClass.MEASUREMENT),
+        OptiGenericSensor(cid, "Internal Temperature", "temperature", "mdi:thermometer", UnitOfTemperature.CELSIUS, SensorDeviceClass.TEMPERATURE, SensorStateClass.MEASUREMENT),
     ]
     async_add_entities(sensors)
 
@@ -54,7 +59,7 @@ class OptiGenericSensor(SensorEntity):
         """Update the sensor's value."""
         if self.suffix in data:
             new_val = data[self.suffix]
-            if self._attr_native_unit_of_measurement:
+            if self._attr_native_unit_of_measurement or self.suffix in ["power_factor"]:
                 try: self._value = float(new_val)
                 except (ValueError, TypeError): self._value = None
             else:

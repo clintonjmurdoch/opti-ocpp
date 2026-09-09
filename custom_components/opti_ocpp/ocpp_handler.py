@@ -41,11 +41,9 @@ class OptiOcppHandler(cp):
         return obj
 
     @on(Action.BootNotification)
-    async def on_boot_notification(self, **kwargs):
-        payload = self._to_dict(kwargs)
-        model = payload.get('charge_point_model', '')
-        _LOGGER.info(f"Charger {self.id} ({model}) connected.")
-        if "7" in str(model) and "22" not in str(model): self.phase_count = 1
+    async def on_boot_notification(self, charge_point_vendor, charge_point_model, **kwargs):
+        _LOGGER.info(f"Charger {self.id} ({charge_point_model}) connected.")
+        if "7" in str(charge_point_model) and "22" not in str(charge_point_model): self.phase_count = 1
         return call_result.BootNotificationPayload(current_time=datetime.now(timezone.utc).isoformat(), interval=30, status=RegistrationStatus.accepted)
 
     @on(Action.Heartbeat)
@@ -53,7 +51,7 @@ class OptiOcppHandler(cp):
         return call_result.HeartbeatPayload(current_time=datetime.now(timezone.utc).isoformat())
 
     @on(Action.Authorize)
-    async def on_authorize(self, **kwargs):
+    async def on_authorize(self, id_tag, **kwargs):
         return call_result.AuthorizePayload(id_tag_info={'status': AuthorizationStatus.accepted})
 
     @on(Action.StatusNotification)
@@ -79,15 +77,12 @@ class OptiOcppHandler(cp):
 
     @on(Action.MeterValues)
     async def on_meter_values(self, connector_id, meter_value, transaction_id=None, **kwargs):
-        """Corrected: transaction_id is now optional with a default value."""
         try:
-            # Step 1: Force everything into a clean dictionary
             payload = self._to_dict({'connector_id': connector_id, 'transaction_id': transaction_id, 'meter_value': meter_value})
             mv_list = payload.get('meter_value', [])
 
             data = {}
             for mv in mv_list:
-                # Step 2: Use simple keys to extract measurements
                 for sv in mv.get('sampled_value', []):
                     meas = sv.get('measurand', 'Energy.Active.Import.Register')
                     phase = sv.get('phase')
@@ -106,15 +101,20 @@ class OptiOcppHandler(cp):
         return call_result.MeterValuesPayload()
 
     async def initialise(self, limit):
+        """Sets optimal stability keys, forces full measurand set, and triggers a state sync."""
         opts = {
             'TxBeforeAcceptedEnabled': 'true',
             'AuthorizeRemoteTxRequests': 'false',
-            'UnlockConnectorOnEVSideDisconnect': 'false'
+            'UnlockConnectorOnEVSideDisconnect': 'false',
+            'MeterValueSampleInterval': '30',
+            'MeterValuesSampledData': 'Energy.Active.Import.Register,Power.Active.Import,Voltage,Current.Import,Current.Offered,Power.Reactive.Import,Power.Factor,Frequency,Temperature'
         }
         for k, v in opts.items():
             try: await self.call(call.ChangeConfigurationPayload(key=k, value=v))
             except Exception: pass
+
         await self.set_profile("TxDefaultProfile", limit, 1, 1)
+
         try:
             await self.call(call.TriggerMessagePayload(requested_message='StatusNotification', connector_id=1))
             await self.call(call.TriggerMessagePayload(requested_message='MeterValues', connector_id=1))
