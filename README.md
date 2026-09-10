@@ -4,7 +4,7 @@ A specialized Home Assistant integration for SEVR Opti EV chargers. This integra
 
 ## Why this integration?
 
-Generic OCPP implementations often struggle with specific charger hardware quirks, particularly regarding handshake timing and firmware-level constraints. This integration addresses these issues by enforcing optimal configuration and prioritizing transaction-level control.
+I just couldn't get anywhere with the most common OCCP integration, so I got Gemini to write a test server that would give me get better debugging information and better control of the handshake between the EVSE and the car. Once that was able to trigger charging and all the other features I wanted, it made sense to just turn it into my own OCPP integration for Home Assistant.
 
 ## Key Features
 
