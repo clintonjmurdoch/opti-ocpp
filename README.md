@@ -30,7 +30,7 @@ The integration manages charging limits across multiple levels to ensure the car
 - Charge Switch: A robust toggle to start and stop sessions. It reflects the live Charging status and remains available even after Home Assistant restarts.
 - Limit Slider: A numeric entity (6A - 32A) to control the active transaction limit.
     - Debounced: Amperage updates are delayed by 500ms while sliding to protect the charger firmware from command flooding.
-    - Auto-Reset: The slider automatically snaps back to your configured default limit once a session is complete (Available, Preparing, or Finishing).
+    - Auto-Reset: The slider automatically snaps back to your configured default limit once a session is complete (Available, Preparing, or Finishing). Meter values for Power and Current are also reset to 0.
 
 ### 4. Full Telemetry & Diagnostics
 Includes 17 real-time sensors mapped from MeterValues:

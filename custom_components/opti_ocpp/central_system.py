@@ -76,11 +76,18 @@ class OptiCentralSystem:
         if status == "Charging":
             await self._apply_limit(cid)
 
-        # Auto-Reset Logic (Added as requested)
+        # Auto-Reset Logic
         if status in ["Available", "Preparing", "Finishing"]:
+            # Reset Amperage Limit Slider
             self.hass.loop.call_soon_threadsafe(
                 async_dispatcher_send, self.hass, OPTI_RESET_LIMIT.format(cid)
             )
+            # Reset Meter Values (Power/Current) to 0 when session ends
+            self._safe_dispatch(cid, {
+                "power": 0, "power_l1": 0, "power_l2": 0, "power_l3": 0,
+                "current_l1": 0, "current_l2": 0, "current_l3": 0,
+                "current_offered": 0, "power_reactive": 0
+            })
 
     def _handle_tid_update(self, cid, tid):
         self.hass.loop.call_soon_threadsafe(
