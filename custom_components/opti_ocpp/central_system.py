@@ -52,23 +52,15 @@ class OptiCentralSystem:
         self.instances[path] = handler
 
         loop_task = asyncio.create_task(handler.start())
-
-        # Bridge to main loop for async initialization (Working pattern from yesterday)
-        self.hass.loop.call_soon_threadsafe(
-            lambda: self.hass.async_create_task(handler.initialise(self.entry.data["default_limit"]))
-        )
+        self.hass.add_job(handler.initialise, self.entry.data["default_limit"])
 
         try: await loop_task
         finally:
             self.instances.pop(path, None)
             self._safe_dispatch(path, {"status": "Disconnected"})
 
-    # --- Sync Callbacks (Bridges from OCPP thread to HA Loop) ---
-
     def _handle_status_update(self, cid, status):
-        self.hass.loop.call_soon_threadsafe(
-            lambda: self.hass.async_create_task(self._async_update_status(cid, status))
-        )
+        self.hass.add_job(self._async_update_status, cid, status)
 
     async def _async_update_status(self, cid, status):
         self._safe_dispatch(cid, {"status": status})
@@ -76,13 +68,8 @@ class OptiCentralSystem:
         if status == "Charging":
             await self._apply_limit(cid)
 
-        # Auto-Reset Logic
         if status in ["Available", "Preparing", "Finishing"]:
-            # Reset Amperage Limit Slider
-            self.hass.loop.call_soon_threadsafe(
-                async_dispatcher_send, self.hass, OPTI_RESET_LIMIT.format(cid)
-            )
-            # Reset Meter Values (Power/Current) to 0 when session ends
+            self.hass.add_job(async_dispatcher_send, self.hass, OPTI_RESET_LIMIT.format(cid))
             self._safe_dispatch(cid, {
                 "power": 0, "power_l1": 0, "power_l2": 0, "power_l3": 0,
                 "current_l1": 0, "current_l2": 0, "current_l3": 0,
@@ -90,21 +77,16 @@ class OptiCentralSystem:
             })
 
     def _handle_tid_update(self, cid, tid):
-        self.hass.loop.call_soon_threadsafe(
-            lambda: self.hass.async_create_task(self._async_save_tid(tid))
-        )
+        self.hass.add_job(self._async_save_tid, tid)
 
     async def _async_save_tid(self, tid):
         self._cached_tid = tid
         await self._store.async_save({"active_transaction_id": tid})
 
     def _handle_meter_values(self, cid, data):
-        self.hass.loop.call_soon_threadsafe(
-            lambda: self.hass.async_create_task(self._async_update_meter_data(cid, data))
-        )
+        self.hass.add_job(self._async_update_meter_data, cid, data)
 
     async def _async_update_meter_data(self, cid, data):
-        # Mapping Expansion (Added as requested)
         mapping = {
             "Energy.Active.Import.Register": "energy",
             "Power.Active.Import": "power",

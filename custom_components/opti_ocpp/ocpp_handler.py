@@ -41,9 +41,11 @@ class OptiOcppHandler(cp):
         return obj
 
     @on(Action.BootNotification)
-    async def on_boot_notification(self, charge_point_vendor, charge_point_model, **kwargs):
-        _LOGGER.info(f"Charger {self.id} ({charge_point_model}) connected.")
-        if "7" in str(charge_point_model) and "22" not in str(charge_point_model): self.phase_count = 1
+    async def on_boot_notification(self, **kwargs):
+        payload = self._to_dict(kwargs)
+        model = payload.get('charge_point_model', '')
+        _LOGGER.info(f"Charger {self.id} ({model}) connected.")
+        if "7" in str(model) and "22" not in str(model): self.phase_count = 1
         return call_result.BootNotificationPayload(current_time=datetime.now(timezone.utc).isoformat(), interval=30, status=RegistrationStatus.accepted)
 
     @on(Action.Heartbeat)
@@ -51,57 +53,67 @@ class OptiOcppHandler(cp):
         return call_result.HeartbeatPayload(current_time=datetime.now(timezone.utc).isoformat())
 
     @on(Action.Authorize)
-    async def on_authorize(self, id_tag, **kwargs):
+    async def on_authorize(self, **kwargs):
         return call_result.AuthorizePayload(id_tag_info={'status': AuthorizationStatus.accepted})
 
     @on(Action.StatusNotification)
-    async def on_status_notification(self, connector_id, error_code, status, **kwargs):
-        status_str = status.value if hasattr(status, 'value') else str(status)
+    async def on_status_notification(self, **kwargs):
+        payload = self._to_dict(kwargs)
+        status_str = payload.get('status')
         _LOGGER.info(f"[STATUS] {self.id}: {status_str}")
-        self.status = status_str
-        if self._on_status_change: self._on_status_change(self.id, status_str)
+        if status_str:
+            self.status = status_str
+            if self._on_status_change: self._on_status_change(self.id, status_str)
         return call_result.StatusNotificationPayload()
 
     @on(Action.StartTransaction)
-    async def on_start_transaction(self, connector_id, id_tag, meter_start, timestamp, **kwargs):
-        tid = 1234
+    async def on_start_transaction(self, **kwargs):
+        payload = self._to_dict(kwargs)
+        tid = 1234 # Fallback to our proven static ID
         self.active_transaction_id = tid
+        _LOGGER.info(f"[TX] Started: {tid}")
         if self._on_transaction_start: self._on_transaction_start(self.id, tid)
         return call_result.StartTransactionPayload(transaction_id=tid, id_tag_info={'status': AuthorizationStatus.accepted})
 
     @on(Action.StopTransaction)
-    async def on_stop_transaction(self, meter_stop, timestamp, transaction_id, **kwargs):
+    async def on_stop_transaction(self, **kwargs):
+        payload = self._to_dict(kwargs)
+        tid = payload.get('transaction_id', self.active_transaction_id)
+        _LOGGER.info(f"[TX] Stopped: {tid}")
         self.active_transaction_id = None
         if self._on_transaction_start: self._on_transaction_start(self.id, None)
         return call_result.StopTransactionPayload()
 
     @on(Action.MeterValues)
-    async def on_meter_values(self, connector_id, meter_value, transaction_id=None, **kwargs):
+    async def on_meter_values(self, **kwargs):
         try:
-            payload = self._to_dict({'connector_id': connector_id, 'transaction_id': transaction_id, 'meter_value': meter_value})
-            mv_list = payload.get('meter_value', [])
+            payload = self._to_dict(kwargs)
+            tid = payload.get('transaction_id')
+            meter_values = payload.get('meter_value', [])
 
-            data = {}
-            for mv in mv_list:
-                for sv in mv.get('sampled_value', []):
-                    meas = sv.get('measurand', 'Energy.Active.Import.Register')
-                    phase = sv.get('phase')
-                    val = sv.get('value')
+            if tid and self.active_transaction_id != tid:
+                self.active_transaction_id = tid
+                if self._on_transaction_start: self._on_transaction_start(self.id, tid)
 
-                    if val is not None:
-                        key = f"{meas}_{phase}" if phase else meas
-                        data[key] = val
+            if self._on_meter_values:
+                data = {}
+                for mv in meter_values:
+                    for sv in mv.get('sampled_value', []):
+                        meas = sv.get('measurand', 'Energy.Active.Import.Register')
+                        phase = sv.get('phase')
+                        val = sv.get('value')
+                        if val is not None:
+                            key = f"{meas}_{phase}" if phase else meas
+                            data[key] = val
 
-            if data and self._on_meter_values:
-                _LOGGER.info(f"[METER] Parsed {len(data)} metrics for {self.id}")
-                self._on_meter_values(self.id, data)
-
+                if data:
+                    _LOGGER.info(f"[METER] Parsed {len(data)} metrics for {self.id}")
+                    self._on_meter_values(self.id, data)
         except Exception as e:
             _LOGGER.error(f"MeterValues parsing crash: {e}")
         return call_result.MeterValuesPayload()
 
     async def initialise(self, limit):
-        """Sets optimal stability keys, forces full measurand set, and triggers a state sync."""
         opts = {
             'TxBeforeAcceptedEnabled': 'true',
             'AuthorizeRemoteTxRequests': 'false',
@@ -122,9 +134,7 @@ class OptiOcppHandler(cp):
 
     async def clear_profiles(self):
         try:
-            res = await self.call(call.ClearChargingProfilePayload())
-            _LOGGER.info(f"Clear Profiles result: {res.status}")
-            return res
+            return await self.call(call.ClearChargingProfilePayload())
         except Exception: pass
 
     async def set_profile(self, purpose, amps, conn=1, stack=20):
