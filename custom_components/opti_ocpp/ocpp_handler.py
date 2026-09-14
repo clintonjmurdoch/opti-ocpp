@@ -57,70 +57,85 @@ class OptiOcppHandler(cp):
         return call_result.AuthorizePayload(id_tag_info={'status': AuthorizationStatus.accepted})
 
     @on(Action.StatusNotification)
-    async def on_status_notification(self, connector_id, error_code, status, **kwargs):
-        status_str = status.value if hasattr(status, 'value') else str(status)
+    async def on_status_notification(self, **kwargs):
+        payload = self._to_dict(kwargs)
+        status_str = payload.get('status')
         _LOGGER.info(f"[STATUS] {self.id}: {status_str}")
-        self.status = status_str
-        if self._on_status_change: self._on_status_change(self.id, status_str)
+        if status_str:
+            self.status = status_str
+            if self._on_status_change: self._on_status_change(self.id, status_str)
         return call_result.StatusNotificationPayload()
 
     @on(Action.StartTransaction)
-    async def on_start_transaction(self, connector_id, id_tag, meter_start, timestamp, **kwargs):
+    async def on_start_transaction(self, **kwargs):
         tid = 1234
         self.active_transaction_id = tid
         if self._on_transaction_start: self._on_transaction_start(self.id, tid)
         return call_result.StartTransactionPayload(transaction_id=tid, id_tag_info={'status': AuthorizationStatus.accepted})
 
     @on(Action.StopTransaction)
-    async def on_stop_transaction(self, meter_stop, timestamp, transaction_id, **kwargs):
+    async def on_stop_transaction(self, **kwargs):
+        payload = self._to_dict(kwargs)
+        tid = payload.get('transaction_id', self.active_transaction_id)
         self.active_transaction_id = None
         if self._on_transaction_start: self._on_transaction_start(self.id, None)
         return call_result.StopTransactionPayload()
 
     @on(Action.MeterValues)
-    async def on_meter_values(self, connector_id, meter_value, transaction_id=None, **kwargs):
-        """Corrected: transaction_id is now optional with a default value."""
+    async def on_meter_values(self, **kwargs):
         try:
-            # Step 1: Force everything into a clean dictionary
-            payload = self._to_dict({'connector_id': connector_id, 'transaction_id': transaction_id, 'meter_value': meter_value})
-            mv_list = payload.get('meter_value', [])
+            payload = self._to_dict(kwargs)
+            tid = payload.get('transaction_id')
+            meter_values = payload.get('meter_value', [])
 
-            data = {}
-            for mv in mv_list:
-                # Step 2: Use simple keys to extract measurements
-                for sv in mv.get('sampled_value', []):
-                    meas = sv.get('measurand', 'Energy.Active.Import.Register')
-                    phase = sv.get('phase')
-                    val = sv.get('value')
+            if tid and self.active_transaction_id != tid:
+                self.active_transaction_id = tid
+                if self._on_transaction_start: self._on_transaction_start(self.id, tid)
 
-                    if val is not None:
-                        key = f"{meas}_{phase}" if phase else meas
-                        data[key] = val
+            if self._on_meter_values:
+                data = {}
+                for mv in meter_values:
+                    for sv in mv.get('sampled_value', []):
+                        meas = sv.get('measurand', 'Energy.Active.Import.Register')
+                        phase = sv.get('phase')
+                        val = sv.get('value')
+                        if val is not None:
+                            key = f"{meas}_{phase}" if phase else meas
+                            data[key] = val
 
-            if data and self._on_meter_values:
-                _LOGGER.info(f"[METER] Parsed {len(data)} metrics for {self.id}")
-                self._on_meter_values(self.id, data)
-
+                if data:
+                    _LOGGER.info(f"[METER] Parsed {len(data)} metrics for {self.id}")
+                    self._on_meter_values(self.id, data)
         except Exception as e:
             _LOGGER.error(f"MeterValues parsing crash: {e}")
         return call_result.MeterValuesPayload()
 
+    async def trigger_meter_values(self):
+        """Proactively requests fresh meter data."""
+        try:
+            return await self.call(call.TriggerMessagePayload(requested_message='MeterValues', connector_id=1))
+        except Exception: return None
+
     async def initialise(self, limit):
-        opts = {'TxBeforeAcceptedEnabled': 'true', 'AuthorizeRemoteTxRequests': 'false', 'StopTransactionOnInvalidId': 'false', 'UnlockConnectorOnEVSideDisconnect': 'false'}
+        opts = {
+            'TxBeforeAcceptedEnabled': 'true',
+            'AuthorizeRemoteTxRequests': 'false',
+            'UnlockConnectorOnEVSideDisconnect': 'false'
+        }
         for k, v in opts.items():
             try: await self.call(call.ChangeConfigurationPayload(key=k, value=v))
             except Exception: pass
+
         await self.set_profile("TxDefaultProfile", limit, 1, 1)
+
         try:
             await self.call(call.TriggerMessagePayload(requested_message='StatusNotification', connector_id=1))
-            await self.call(call.TriggerMessagePayload(requested_message='MeterValues', connector_id=1))
+            await self.trigger_meter_values()
         except Exception: pass
 
     async def clear_profiles(self):
         try:
-            res = await self.call(call.ClearChargingProfilePayload())
-            _LOGGER.info(f"Clear Profiles result: {res.status}")
-            return res
+            return await self.call(call.ClearChargingProfilePayload())
         except Exception: pass
 
     async def set_profile(self, purpose, amps, conn=1, stack=20):
@@ -139,4 +154,4 @@ class OptiOcppHandler(cp):
         return await self.call(call.RemoteStartTransactionPayload(id_tag='PLUG_PLAY_IDTAG', connector_id=1))
 
     async def stop_charge(self):
-        return await self.call(call.RemoteStopTransactionPayload(transaction_id=self.active_transaction_id or 1234))
+        return await self.call(call.RemoteStopTransaction(transaction_id=self.active_transaction_id or 1234))

@@ -18,6 +18,7 @@ class OptiCentralSystem:
         self._server = None
         self._store = Store(hass, 1, f"{DOMAIN}_{self.charger_id}_data")
         self._cached_tid = None
+        self._refresh_tasks = {} # Track periodic refresh tasks per charger
 
     async def start(self):
         data = await self._store.async_load()
@@ -33,6 +34,8 @@ class OptiCentralSystem:
             _LOGGER.error(f"Failed to start server: {e}")
 
     async def stop(self):
+        for task in self._refresh_tasks.values():
+            task.cancel()
         if self._server:
             self._server.close()
             await self._server.wait_closed()
@@ -52,33 +55,70 @@ class OptiCentralSystem:
         self.instances[path] = handler
 
         loop_task = asyncio.create_task(handler.start())
-        self.hass.add_job(handler.initialise, self.entry.data["default_limit"])
+        self.hass.loop.call_soon_threadsafe(
+            lambda: self.hass.async_create_task(handler.initialise(self.entry.data["default_limit"]))
+        )
 
         try: await loop_task
         finally:
+            self._stop_periodic_refresh(path)
             self.instances.pop(path, None)
             self._safe_dispatch(path, {"status": "Disconnected"})
 
     def _handle_status_update(self, cid, status):
-        self.hass.add_job(self._async_update_status, cid, status)
+        self.hass.loop.call_soon_threadsafe(
+            lambda: self.hass.async_create_task(self._async_update_status(cid, status))
+        )
 
     async def _async_update_status(self, cid, status):
         self._safe_dispatch(cid, {"status": status})
+
         if status == "Charging":
+            # Start periodic 30s refresh loop
+            self._start_periodic_refresh(cid)
             await self._apply_limit(cid)
+        else:
+            # Session ended: Stop refresh loop and reset sensors to 0
+            self._stop_periodic_refresh(cid)
+            self._safe_dispatch(cid, {
+                "power": 0, "power_l1": 0, "power_l2": 0, "power_l3": 0,
+                "current_l1": 0, "current_l2": 0, "current_l3": 0,
+                "current_offered": 0, "power_reactive": 0
+            })
+
+    def _start_periodic_refresh(self, cid):
+        if cid in self._refresh_tasks: return
+
+        async def _refresh_loop():
+            try:
+                while True:
+                    instance = self.instances.get(cid)
+                    if instance:
+                        await instance.trigger_meter_values()
+                    await asyncio.sleep(30)
+            except asyncio.CancelledError: pass
+
+        self._refresh_tasks[cid] = self.hass.async_create_task(_refresh_loop())
+
+    def _stop_periodic_refresh(self, cid):
+        task = self._refresh_tasks.pop(cid, None)
+        if task: task.cancel()
 
     def _handle_tid_update(self, cid, tid):
-        self.hass.add_job(self._async_save_tid, tid)
+        self.hass.loop.call_soon_threadsafe(
+            lambda: self.hass.async_create_task(self._async_save_tid(tid))
+        )
 
     async def _async_save_tid(self, tid):
         self._cached_tid = tid
         await self._store.async_save({"active_transaction_id": tid})
 
     def _handle_meter_values(self, cid, data):
-        """Thread-safe meter data callback."""
-        self.hass.add_job(self._async_update_meter, cid, data)
+        self.hass.loop.call_soon_threadsafe(
+            lambda: self.hass.async_create_task(self._async_update_meter_data(cid, data))
+        )
 
-    async def _async_update_meter(self, cid, data):
+    async def _async_update_meter_data(self, cid, data):
         mapping = {
             "Energy.Active.Import.Register": "energy",
             "Power.Active.Import": "power",
@@ -90,7 +130,12 @@ class OptiCentralSystem:
             "Current.Import_L3-N": "current_l3",
             "Voltage_L1-N": "voltage_l1",
             "Voltage_L2-N": "voltage_l2",
-            "Voltage_L3-N": "voltage_l3"
+            "Voltage_L3-N": "voltage_l3",
+            "Current.Offered": "current_offered",
+            "Power.Reactive.Import": "power_reactive",
+            "Power.Factor": "power_factor",
+            "Frequency": "frequency",
+            "Temperature": "temperature"
         }
         update_payload = {}
         for ocpp_key, ha_suffix in mapping.items():
@@ -108,6 +153,9 @@ class OptiCentralSystem:
         state = self.hass.states.get(f"number.opti_{cid}_limit")
         if state and cid in self.instances:
             limit = float(state.state)
-            await self.instances[cid].set_profile("TxProfile", limit, conn=1, stack=20)
+            instance = self.instances[cid]
+            await instance.set_profile("TxProfile", limit, conn=1, stack=20)
+            # Refresh meter values immediately after limit change
+            await instance.trigger_meter_values()
 
     def get_instance(self, cid): return self.instances.get(cid)
