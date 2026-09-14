@@ -20,7 +20,7 @@ limit:
           max: 32
           unit_of_measurement: A
 get_configuration:
-  description: "Dumps the charger's internal settings to the Home Assistant logs."
+  description: "Retrieves the charger's internal configuration keys and values."
 set_configuration:
   description: "Manually changes a specific internal setting on the charger."
   fields:
