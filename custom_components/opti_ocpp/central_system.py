@@ -18,7 +18,7 @@ class OptiCentralSystem:
         self._server = None
         self._store = Store(hass, 1, f"{DOMAIN}_{self.charger_id}_data")
         self._cached_tid = None
-        self._refresh_tasks = {} # Track periodic refresh tasks per charger
+        self._refresh_tasks = {}
 
     async def start(self):
         data = await self._store.async_load()
@@ -59,10 +59,7 @@ class OptiCentralSystem:
             lambda: self.hass.async_create_task(handler.initialise(self.entry.data["default_limit"]))
         )
 
-        try:
-            await loop_task
-        except Exception as e:
-            _LOGGER.error(f"Connection handler failed for {path}: {e}", exc_info=True)
+        try: await loop_task
         finally:
             self._stop_periodic_refresh(path)
             self.instances.pop(path, None)
@@ -77,12 +74,11 @@ class OptiCentralSystem:
         self._safe_dispatch(cid, {"status": status})
 
         if status == "Charging":
-            # Start periodic 30s refresh loop
             self._start_periodic_refresh(cid)
             await self._apply_limit(cid)
         else:
-            # Session ended: Stop refresh loop and reset sensors to 0
             self._stop_periodic_refresh(cid)
+            # Reset values to 0 when not charging
             self._safe_dispatch(cid, {
                 "power": 0, "power_l1": 0, "power_l2": 0, "power_l3": 0,
                 "current_l1": 0, "current_l2": 0, "current_l3": 0,
@@ -91,16 +87,13 @@ class OptiCentralSystem:
 
     def _start_periodic_refresh(self, cid):
         if cid in self._refresh_tasks: return
-
         async def _refresh_loop():
             try:
                 while True:
                     instance = self.instances.get(cid)
-                    if instance:
-                        await instance.trigger_meter_values()
+                    if instance: await instance.trigger_meter_values()
                     await asyncio.sleep(30)
             except asyncio.CancelledError: pass
-
         self._refresh_tasks[cid] = self.hass.async_create_task(_refresh_loop())
 
     def _stop_periodic_refresh(self, cid):
@@ -108,9 +101,7 @@ class OptiCentralSystem:
         if task: task.cancel()
 
     def _handle_tid_update(self, cid, tid):
-        self.hass.loop.call_soon_threadsafe(
-            lambda: self.hass.async_create_task(self._async_save_tid(tid))
-        )
+        self.hass.add_job(self._async_save_tid, tid)
 
     async def _async_save_tid(self, tid):
         self._cached_tid = tid
@@ -158,7 +149,6 @@ class OptiCentralSystem:
             limit = float(state.state)
             instance = self.instances[cid]
             await instance.set_profile("TxProfile", limit, conn=1, stack=20)
-            # Refresh meter values immediately after limit change
             await instance.trigger_meter_values()
 
     def get_instance(self, cid): return self.instances.get(cid)
