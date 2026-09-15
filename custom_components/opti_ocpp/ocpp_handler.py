@@ -85,8 +85,8 @@ class OptiOcppHandler(cp):
     async def on_meter_values(self, **kwargs):
         try:
             payload = self._to_dict(kwargs)
-            tid = payload.get('transaction_id')
             meter_values = payload.get('meter_value', [])
+            tid = payload.get('transaction_id')
 
             if tid and self.active_transaction_id != tid:
                 self.active_transaction_id = tid
@@ -111,7 +111,6 @@ class OptiOcppHandler(cp):
         return call_result.MeterValuesPayload()
 
     async def trigger_meter_values(self):
-        """Proactively requests fresh meter data."""
         try:
             return await self.call(call.TriggerMessagePayload(requested_message='MeterValues', connector_id=1))
         except Exception: return None
@@ -154,4 +153,4 @@ class OptiOcppHandler(cp):
         return await self.call(call.RemoteStartTransactionPayload(id_tag='PLUG_PLAY_IDTAG', connector_id=1))
 
     async def stop_charge(self):
-        return await self.call(call.RemoteStopTransaction(transaction_id=self.active_transaction_id or 1234))
+        return await self.call(call.RemoteStopTransactionPayload(transaction_id=self.active_transaction_id or 1234))

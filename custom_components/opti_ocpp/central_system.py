@@ -59,7 +59,10 @@ class OptiCentralSystem:
             lambda: self.hass.async_create_task(handler.initialise(self.entry.data["default_limit"]))
         )
 
-        try: await loop_task
+        try:
+            await loop_task
+        except Exception as e:
+            _LOGGER.error(f"Connection handler failed for {path}: {e}", exc_info=True)
         finally:
             self._stop_periodic_refresh(path)
             self.instances.pop(path, None)
